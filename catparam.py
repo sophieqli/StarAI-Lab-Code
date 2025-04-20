@@ -8,7 +8,7 @@ class LearnableJointCategorical(nn.Module):
         self.l = num_classes
         self.lambdas = nn.Parameter(torch.randn(self.l - 1)) #from 2 to self.l inclusive 
 
-    def getjoints(self, p_u, p_v, method = "midpoint"):
+    def getjoints(self, p_u, p_v, lambdas, method = "none"):
         assert p_u.shape == p_v.shape
         assert p_u.shape[0] == self.l
 
@@ -25,13 +25,15 @@ class LearnableJointCategorical(nn.Module):
             lower = max(0, pu_sum_prev / pu_sum + pv_sum_prev / pv_sum - 1)
             upper = min(pu_sum_prev / pu_sum, pv_sum_prev / pv_sum)
 
+            lambda_scaled = lambdas[level-2]
+            lambda_scaled = max(lambda_scaled, lower)
+            lambda_scaled = min(lambda_scaled, upper)
             #Choose fixed lambda in range (later, make it trainable)
+            
             if method == "midpoint":
                 lambda_scaled = (lower + upper) / 2
             elif method == "random":
                 lambda_scaled = lower + (upper - lower) * torch.rand(())
-            else:
-                raise ValueError("Method must be 'midpoint' or 'random'")
 
             print("choosing lambda",level," as:", lambda_scaled)
             #create the new distribution
@@ -60,8 +62,9 @@ class LearnableJointCategorical(nn.Module):
 model = LearnableJointCategorical(num_classes=4)
 p_u = torch.tensor([0.3, 0.2, 0.1, 0.4])
 p_v = torch.tensor([0.4, 0.3, 0.25, 0.05])
+lambdas = torch.tensor([0.215, 0.68, 0.56])
 print("u(row)-marginals: ", p_u)
 print("v(col)-marginals: ", p_v)
-joint = model.getjoints(p_u, p_v, method="random")
+joint = model.getjoints(p_u, p_v, lambdas, method="none")
 
 print(joint)
