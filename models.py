@@ -96,6 +96,8 @@ class MoAT(nn.Module):
         # separate lambdas for each pair of variables Xi and Xj??
         #initialize based on sub-grid ratios
         self.lambdas = torch.zeros((n, n, self.l-1))
+
+        #IS THIS INITIALIZATION sHITTY
         for k in range(self.l - 1): 
             #self.lambdas{;, ;, 0] corresponds to lambda_2 
             self.lambdas[:, :, k] = torch.sum(E_compress[:, :, :k+1, :k+1]) / (torch.sum(E_compress[:, :, :k+2, :k+2] EPS))
