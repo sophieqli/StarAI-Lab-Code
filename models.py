@@ -15,97 +15,95 @@ class MoAT(nn.Module):
     ###     Parameter Initialization     ###
     ########################################
 
-    def __init__(self, n, x, num_classes = 2, device='cpu'):
+    def __init__(self, n, x, num_classes=2, device='cpu'):
         super().__init__()
 
         self.n = n
         self.l = num_classes
+        self.lambdas = torch.zeros((n, n, self.l - 1))
+
 
         print('initializing params ...')
         with torch.no_grad():
-            m = x.shape[0] #samples
+            m = x.shape[0]  # samples
 
             # estimate marginals from data
             x = x.to(device)
 
             # pairwise marginals
-            E = torch.zeros(n, n, self.l, self.l).to(device) #SL
+            E = torch.zeros(n, n, self.l, self.l).to(device)  # SL
             block_size = (2 ** 30) // (n * n * self.l * self.l)
             for block_idx in tqdm(range(0, m, block_size)):
                 block_size_ = min(block_size, m - block_idx)
-                x_block = x[block_idx:block_idx+block_size_]
-                #x_1, x_2 = x_block.unsqueeze(2), x_block.unsqueeze(1)
-                #x_1, x_2 = x_1.type(torch.float32), x_2.type(torch.float32)
+                x_block = x[block_idx:block_idx + block_size_]
                 x_2d = torch.zeros(block_size_, n, n, self.l, self.l).to(device)
-                for k in range(block_size_): 
+                for k in range(block_size_):
                     for i in range(n):
-                        for j in range(n): 
+                        for j in range(n):
                             a = x_block[k, i].item()
                             b = x_block[k, j].item()
-                            x_2d[k,i,j,a,b] = 1 #X_i = a, X_j = b on this sample 
-                
+                            x_2d[k, i, j, a, b] = 1  # X_i = a, X_j = b on this sample
+
                 E += torch.sum(x_2d, dim=0)  # shape: [n, n, l, l]
 
+            #E = (E + 1.0) / float(m + 2) CHANGE BACK LATER
+            E = (E) / float(m)
 
-                
-                '''BINARY SHORTCUT 
-                x_2d = torch.zeros(block_size_, n, n, 2, 2).to(device)
-                x_2d[:,:,:,0,0] = torch.matmul(1.0 - x_1, 1.0 - x_2)
-                x_2d[:,:,:,0,1] = torch.matmul(1.0 - x_1, x_2)
-                x_2d[:,:,:,1,0] = torch.matmul(x_1, 1.0 - x_2)
-                x_2d[:,:,:,1,1] = torch.matmul(x_1, x_2)
-                E += torch.sum(x_2d, dim=0)
-                '''
-            E = (E+1.0) / float(m+2)
             E = E.to('cpu')
-            E_compress=E.clone()
+            E_compress = E.clone()
 
-            # univariate marginals CHANGED INITIALIZATION
+            # univariate marginals initialization
             V = torch.zeros(n, self.l)
 
-            for i in range(self.l): 
-                cnt = torch.sum(x == i, dim = 0) # count how many times i appears in each column
-                V[:, i] = (cnt + 1) / (float(m) + self.l)
+            for i in range(self.l):
+                cnt = torch.sum(x == i, dim=0)  # count how many times i appears in each column
+                #V[:, i] = (cnt + 1) / (float(m) + self.l) CHANGE INITIALIZATION BACK LATER
+                V[:, i] = (cnt) / (float(m))
+            V_compress = V.clone()
+            # shape [n, l]
 
-            V_compress=V.clone()
+            E_compress = torch.clamp(E_compress, min=EPS)  # to avoid log(0) or div by 0
+            E_compress = E_compress / (E_compress.sum(dim=(-2, -1), keepdim=True) + EPS)  # normalize joint by basically 1
 
-            # scale pairwise marginals to [0,1]
-            upper_bound = torch.minimum(V_compress.unsqueeze(0), V_compress.unsqueeze(-1))
-            lower_bound = torch.maximum(V_compress.unsqueeze(-1) + V_compress.unsqueeze(0) - 1.0,
-                            torch.zeros(E_compress.shape).to(V_compress.device)+EPS)
-            E_compress = torch.div((E_compress-lower_bound),(upper_bound - lower_bound+EPS))
-            E_compress=torch.abs(E_compress-EPS)
-            E_compress = torch.tril(E_compress, diagonal=-1)
-            E_compress = torch.transpose(E_compress, 0, 1) + E_compress
+            #initialize lambdas
+            for k in range(self.l - 1):
+            # self.lambdas{;, ;, 0] corresponds to lambda_2
+              numer = torch.sum(E_compress[:, :, :k+1, :k+1], dim=(-2, -1))
+              denom = (torch.sum(E_compress[:, :, :k+2, :k+2] + EPS, dim=(-2, -1)))
+              self.lambdas[:, :, k] = numer / denom
 
-            # logit for unconstrained paramter learning
-            V_compress=torch.special.logit(V_compress)
-            E_compress=torch.special.logit(E_compress)
+            # logit for unconstrained parameter learning (inverse sigmoid)
+            V_compress = torch.special.logit(V_compress)
+            E_compress = torch.special.logit(E_compress)
 
             print('computing MI ...')
-            E_new = torch.maximum(E, torch.ones(1) * EPS).to(device)
-            V_new = torch.maximum(V.unsqueeze(1).unsqueeze(-1) * V.unsqueeze(1).unsqueeze(0), torch.ones(1) * EPS).to(device)
-            MI = torch.sum(torch.sum(E_new * torch.log(E_new / V_new), dim=-1), dim=-1)
-            MI += EPS
+            E_new = torch.maximum(E, torch.ones(1) * EPS).to(device) #Pairwise joints
+            left = V.unsqueeze(1).unsqueeze(-1)  # shape: [n, 1, l, 1]
+            right = V.unsqueeze(1).unsqueeze(0)  # shape: [1, n, 1, l]
+            # gives tensor n,n,l,l -> pairwise mutual info distributions (assuming independence for baseline comparison)
+            V_new = torch.maximum(left * right, torch.ones(1) * EPS).to(device)
 
-            MI=torch.special.logit(MI)
+            MI = torch.sum(torch.sum(E_new * torch.log(E_new / V_new), dim=-1), dim=-1)
+            '''
+            Equivalently, for readability
+            MI = torch.zeros((n, n))
+            for i in range(n):
+                for j in range(n):
+                    # get sum of everything in
+                    MI[i,j] = torch.sum(E_new[i, j] * torch.log(E_new[i, j] / V_new[i, j]))
+            '''
+            MI += EPS
+            MI = torch.special.logit(MI)
 
         # W stores the edge weights
         self.W = nn.Parameter(MI, requires_grad=True)
-        # NO LONGER TRUE self.E_compress=nn.Parameter(E_compress, requires_grad=True)
+        # E_compress are no longer parameters -- they're determined by marginals and lambdas
         # separate lambdas for each pair of variables Xi and Xj??
-        #initialize based on sub-grid ratios
-        self.lambdas = torch.zeros((n, n, self.l-1))
+        # initialize based on sub-grid ratios
 
-        #IS THIS INITIALIZATION sHITTY
-        for k in range(self.l - 1): 
-            #self.lambdas{;, ;, 0] corresponds to lambda_2 
-            self.lambdas[:, :, k] = torch.sum(E_compress[:, :, :k+1, :k+1]) / (torch.sum(E_compress[:, :, :k+2, :k+2] EPS))
-
-        self.lambdas = nn.Parameter(self.lambdas, requires_grad= True)
+        self.lambdas = nn.Parameter(self.lambdas, requires_grad=True)
         self.E_compress = E_compress
-        self.V_compress=nn.Parameter(V_compress, requires_grad=True)
-
+        self.V_compress = nn.Parameter(V_compress, requires_grad=True)
 
 
     ########################################
