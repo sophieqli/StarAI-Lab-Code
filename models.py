@@ -9,6 +9,8 @@ from tqdm import tqdm
 
 EPS=1e-7
 
+from catparam import LearnableJointCategorical
+
 class MoAT(nn.Module):
 
     ########################################
@@ -21,7 +23,7 @@ class MoAT(nn.Module):
         self.n = n
         self.l = num_classes
         self.lambdas = torch.zeros((n, n, self.l - 1))
-
+        self.catmodel = LearnableJointCategorical(num_classes=num_classes)
 
         print('initializing params ...')
         with torch.no_grad():
@@ -74,7 +76,7 @@ class MoAT(nn.Module):
 
             # logit for unconstrained parameter learning (inverse sigmoid)
             V_compress = torch.special.logit(V_compress)
-            E_compress = torch.special.logit(E_compress)
+            #not learnable rn b/c of lambdas: E_compress = torch.special.logit(E_compress)
 
             print('computing MI ...')
             E_new = torch.maximum(E, torch.ones(1) * EPS).to(device) #Pairwise joints
@@ -112,27 +114,18 @@ class MoAT(nn.Module):
 
     def forward(self, x):
         batch_size, d = x.shape
-        n, W, V_compress, E_compress = self.n, self.W, torch.sigmoid(self.V_compress),torch.sigmoid(self.E_compress)
-        upper_bound = torch.minimum(V_compress.unsqueeze(0), V_compress.unsqueeze(-1))
-        lower_bound = torch.maximum(V_compress.unsqueeze(-1) + V_compress.unsqueeze(0) - 1.0,
-                        torch.zeros(E_compress.shape).to(V_compress.device)+EPS)
-        E_compress = E_compress * ((upper_bound - lower_bound)+EPS) + lower_bound
-        print("after sigmoid: ", V_compress, E_compress)
+        n, W, V_compress, E_compress = self.n, self.W, torch.sigmoid(self.V_compress),torch.sigmoid(self.E_compress) #convert back to raw probabilities
 
+        #E_compress is all pairwise joints, based on their lambda parameters
+        for i in range(n):
+          for j in range(n):
+            if i == j: continue
+            #margs V_compress[i] and V_compress[j], self.lambdas
+            E_compress[i, j, :, :] = self.catmodel.getjoints(V_compress[i], V_compress[j], self.lambdas[i, j, :], method="none")
 
-        V1 = V_compress # n
-        V0 = 1 - V_compress
-        V = torch.stack((V0, V1), dim=1) # n * 2
-
-        E11 = E_compress # n * n
-        E01 = V1.unsqueeze(0) - E11
-        E10 = V1.unsqueeze(-1) - E11
-        E00 = 1 - E01 - E10 - E11
-        E0 = torch.stack((E00, E01), dim=-1) # n * n * 2
-        E1 = torch.stack((E10, E11), dim=-1) # n * n * 2
-        E = torch.stack((E0, E1), dim=2)
-
-        E_mask = (1.0 - torch.diag(torch.ones(n)).unsqueeze(-1).unsqueeze(-1)).to(E.device)
+        V  = V_compress.clone()
+        E = E_compress.clone()
+        E_mask = (1.0 - torch.diag(torch.ones(n)).unsqueeze(-1).unsqueeze(-1)).to(E.device) #broadcasts to 1, 1, n, n diag matrix (zeroes out Xi, Xi)
         E = E * E_mask
         E=torch.clamp(E,0,1)
 
@@ -144,13 +137,14 @@ class MoAT(nn.Module):
         L_0 = -W + torch.diag_embed(torch.sum(W, dim=1))
 
         Pr = V[torch.arange(n).unsqueeze(0), x]
+        print("prob shsape ", Pr.shape)
 
         P = E[torch.arange(n).unsqueeze(0).unsqueeze(-1),
                 torch.arange(n).unsqueeze(0).unsqueeze(0),
                 x.unsqueeze(-1),
                 x.unsqueeze(1)] # E[i, j, x[idx, i], x[idx, j]]
-        P = P / torch.matmul(Pr.unsqueeze(2), Pr.unsqueeze(1)) # P: bath_size * n * n
 
+        P = P / torch.matmul(Pr.unsqueeze(2), Pr.unsqueeze(1)) # P: bath_size * n * n
 
         W = W.unsqueeze(0) # W: 1 * n * n; W * P: batch_size * n * n
         L = -W * P + torch.diag_embed(torch.sum(W * P, dim=2))  # L: batch_size * n * n
@@ -160,7 +154,7 @@ class MoAT(nn.Module):
         if y[y != y].shape[0] != 0:
             print("NaN!")
             exit(0)
-
+        #likelihood for each sample
         return y
 
     ########################################
