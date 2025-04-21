@@ -26,8 +26,11 @@ class LearnableJointCategorical(nn.Module):
             upper = min(pu_sum_prev / pu_sum, pv_sum_prev / pv_sum)
 
             lambda_scaled = lambdas[level-2]
-            lambda_scaled = max(lambda_scaled, lower)
-            lambda_scaled = min(lambda_scaled, upper)
+            lower = torch.tensor(lower, dtype=lambdas.dtype, device=lambdas.device)
+            upper = torch.tensor(upper, dtype=lambdas.dtype, device=lambdas.device)
+
+            lambda_scaled = torch.clamp(lambda_scaled, min=lower, max=upper)
+
             #Choose fixed lambda in range (later, make it trainable)
             
             if method == "midpoint":
@@ -60,11 +63,12 @@ class LearnableJointCategorical(nn.Module):
 
 #SET WHATEVER MARGINALS U WANT HERE
 model = LearnableJointCategorical(num_classes=4)
+'''
 p_u = torch.tensor([0.3, 0.2, 0.1, 0.4])
 p_v = torch.tensor([0.4, 0.3, 0.25, 0.05])
 lambdas = torch.tensor([0.215, 0.68, 0.56])
 print("u(row)-marginals: ", p_u)
 print("v(col)-marginals: ", p_v)
 joint = model.getjoints(p_u, p_v, lambdas, method="none")
-
 print(joint)
+'''

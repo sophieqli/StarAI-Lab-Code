@@ -5,6 +5,8 @@ import math
 import utils
 import random
 
+#hello :) 
+
 from tqdm import tqdm
 
 EPS=1e-7
@@ -26,6 +28,7 @@ class MoAT(nn.Module):
         self.catmodel = LearnableJointCategorical(num_classes=num_classes)
 
         print('initializing params ...')
+        print(self.l, " classes ", x.shape, " x shape ")
         with torch.no_grad():
             m = x.shape[0]  # samples
 
@@ -48,7 +51,7 @@ class MoAT(nn.Module):
 
                 E += torch.sum(x_2d, dim=0)  # shape: [n, n, l, l]
 
-            #E = (E + 1.0) / float(m + 2) CHANGE BACK LATER
+            #E = (E + 1.0) / float(m + 2) #CHANGE BACK LATER
             E = (E) / float(m)
 
             E = E.to('cpu')
@@ -59,7 +62,9 @@ class MoAT(nn.Module):
 
             for i in range(self.l):
                 cnt = torch.sum(x == i, dim=0)  # count how many times i appears in each column
-                #V[:, i] = (cnt + 1) / (float(m) + self.l) CHANGE INITIALIZATION BACK LATER
+                print("count shape ", cnt.shape)
+                print("at this stage ", V.shape)
+                #V[:, i] = (cnt + 1) / (float(m) + self.l) #CHANGE INITIALIZATION BACK LATER
                 V[:, i] = (cnt) / (float(m))
             V_compress = V.clone()
             # shape [n, l]
@@ -116,6 +121,8 @@ class MoAT(nn.Module):
         batch_size, d = x.shape
         n, W, V_compress, E_compress = self.n, self.W, torch.sigmoid(self.V_compress),torch.sigmoid(self.E_compress) #convert back to raw probabilities
 
+        #is the problem that E_compress is NOT trainable and since lambda determines it, we can't backprop thru likelihiood and update lambda 
+
         #E_compress is all pairwise joints, based on their lambda parameters
         for i in range(n):
           for j in range(n):
@@ -137,7 +144,6 @@ class MoAT(nn.Module):
         L_0 = -W + torch.diag_embed(torch.sum(W, dim=1))
 
         Pr = V[torch.arange(n).unsqueeze(0), x]
-        print("prob shsape ", Pr.shape)
 
         P = E[torch.arange(n).unsqueeze(0).unsqueeze(-1),
                 torch.arange(n).unsqueeze(0).unsqueeze(0),

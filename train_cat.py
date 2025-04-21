@@ -204,9 +204,12 @@ def train_model(model, train, valid, test,
             loss = nll(y_batch)
             optimizer.zero_grad()
             loss.backward()
+            print("Lambda gradients:", model.lambdas.grad)
+
             optimizer.step()
 
 
+            '''
             #Sophie::margs lowk go outta whack here so re-do IPFP
             ######################################
             with torch.no_grad():
@@ -246,6 +249,7 @@ def train_model(model, train, valid, test,
             print("after IPFP :")
             print("MARGS ", model.V_compress)
             print("JOINTS ", model.E_compress)
+            '''
 
         # compute likelihood on train, valid and test
         train_ll = avg_ll(model, train_loader)
@@ -280,7 +284,8 @@ def main():
     if args.model == 'MoAT':
         t_data=train.x.clone()
         t_data.to(device)
-        model = MoAT(m, t_data)
+        #model = MoAT(m, t_data)
+        model = MoAT(n=2, x=t_data, num_classes=3, device='cpu')
         model.to(device)
         train_loader = DataLoader(dataset=train, batch_size=args.batch_size, shuffle=True)
         print('average ll: {}'.format(avg_ll(model, train_loader)))
