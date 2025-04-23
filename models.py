@@ -51,8 +51,8 @@ class MoAT(nn.Module):
 
                 E += torch.sum(x_2d, dim=0)  # shape: [n, n, l, l]
 
-            #E = (E + 1.0) / float(m + 2) #CHANGE BACK LATER
-            E = (E) / float(m)
+            E = (E + 1.0) / float(m + 2) #CHANGE BACK LATER
+            #E = (E) / float(m)
 
             E = E.to('cpu')
             E_compress = E.clone()
@@ -62,22 +62,23 @@ class MoAT(nn.Module):
 
             for i in range(self.l):
                 cnt = torch.sum(x == i, dim=0)  # count how many times i appears in each column
-                print("count shape ", cnt.shape)
-                print("at this stage ", V.shape)
-                #V[:, i] = (cnt + 1) / (float(m) + self.l) #CHANGE INITIALIZATION BACK LATER
-                V[:, i] = (cnt) / (float(m))
+                V[:, i] = (cnt + 1) / (float(m) + self.l) #CHANGE INITIALIZATION BACK LATER
+                #V[:, i] = (cnt) / (float(m))
             V_compress = V.clone()
             # shape [n, l]
 
             E_compress = torch.clamp(E_compress, min=EPS)  # to avoid log(0) or div by 0
             E_compress = E_compress / (E_compress.sum(dim=(-2, -1), keepdim=True) + EPS)  # normalize joint by basically 1
 
+            print("initial marginals before logits ")
+            print(V_compress)
             #initialize lambdas
             for k in range(self.l - 1):
             # self.lambdas{;, ;, 0] corresponds to lambda_2
               numer = torch.sum(E_compress[:, :, :k+1, :k+1], dim=(-2, -1))
               denom = (torch.sum(E_compress[:, :, :k+2, :k+2] + EPS, dim=(-2, -1)))
               self.lambdas[:, :, k] = numer / denom
+
 
             # logit for unconstrained parameter learning (inverse sigmoid)
             V_compress = torch.special.logit(V_compress)
@@ -90,6 +91,10 @@ class MoAT(nn.Module):
             # gives tensor n,n,l,l -> pairwise mutual info distributions (assuming independence for baseline comparison)
             V_new = torch.maximum(left * right, torch.ones(1) * EPS).to(device)
 
+            print("E new")
+            print(E_new)
+            print("V new")
+            print(V_new)
             MI = torch.sum(torch.sum(E_new * torch.log(E_new / V_new), dim=-1), dim=-1)
             '''
             Equivalently, for readability
@@ -100,6 +105,12 @@ class MoAT(nn.Module):
                     MI[i,j] = torch.sum(E_new[i, j] * torch.log(E_new[i, j] / V_new[i, j]))
             '''
             MI += EPS
+            print("Mutual ifo ")
+            print(MI)
+
+            #ENSURE IN RANGE OF 0-1
+            MI_max = (MI.max()+EPS).unsqueeze(0).unsqueeze(0)
+            MI = MI / (MI_max)
             MI = torch.special.logit(MI)
 
         # W stores the edge weights
@@ -107,6 +118,10 @@ class MoAT(nn.Module):
         # E_compress are no longer parameters -- they're determined by marginals and lambdas
         # separate lambdas for each pair of variables Xi and Xj??
         # initialize based on sub-grid ratios
+
+        self.lambdas = torch.special.logit(self.lambdas) 
+
+        #KEY CHANGE: make lambdas unconstrained
 
         self.lambdas = nn.Parameter(self.lambdas, requires_grad=True)
         self.E_compress = E_compress
@@ -127,8 +142,8 @@ class MoAT(nn.Module):
         for i in range(n):
           for j in range(n):
             if i == j: continue
-            #margs V_compress[i] and V_compress[j], self.lambdas
             E_compress[i, j, :, :] = self.catmodel.getjoints(V_compress[i], V_compress[j], self.lambdas[i, j, :], method="none")
+        
 
         V  = V_compress.clone()
         E = E_compress.clone()
@@ -154,6 +169,8 @@ class MoAT(nn.Module):
 
         W = W.unsqueeze(0) # W: 1 * n * n; W * P: batch_size * n * n
         L = -W * P + torch.diag_embed(torch.sum(W * P, dim=2))  # L: batch_size * n * n
+        #print(" -> -> computing fwd with: ")
+        #print(E_compress)
 
         y = torch.sum(torch.log(Pr), dim=1) + torch.logdet(L[:, 1:, 1:]) - torch.logdet(L_0[1:, 1:])
 
