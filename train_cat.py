@@ -194,7 +194,7 @@ def train_model(model, train, valid, test,
     model = model.to(device)
     model.train()
 
-    for epoch in range(0, 750): #REMEMBER TO CHANGE BACK TO MAX EPOCH
+    for epoch in range(0, 500): #REMEMBER TO CHANGE BACK TO MAX EPOCH
         print('Epoch: {}'.format(epoch))
 
         # step in train
@@ -205,7 +205,6 @@ def train_model(model, train, valid, test,
             optimizer.zero_grad()
             loss.backward()
 
-            print("Lambdas: ", model.lambdas)
             print("Lambda gradients: ", model.lambdas.grad)
             print("V_compress (probabilities before normliazation) :")
             print(torch.sigmoid(model.V_compress))
@@ -269,10 +268,12 @@ def train_model(model, train, valid, test,
             max_valid_ll = valid_ll
 
     #out of loop, print final distribution
-    print("out of training, final distribution")
+    print("out of training, final distribution (V_compress, lambdas, E_compress")
     V_compress=  torch.sigmoid(model.V_compress)
     V_compress = V_compress / V_compress.sum(dim=1, keepdim=True)
-    E_compress = 
+    print(V_compress)
+    print(torch.sigmoid(model.lambdas))
+    print(model.E_compress)
 
 
 def main():

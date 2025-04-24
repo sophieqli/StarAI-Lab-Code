@@ -78,6 +78,8 @@ class MoAT(nn.Module):
               numer = torch.sum(E_compress[:, :, :k+1, :k+1], dim=(-2, -1))
               denom = (torch.sum(E_compress[:, :, :k+2, :k+2] + EPS, dim=(-2, -1)))
               self.lambdas[:, :, k] = numer / denom
+            print("initial joints, based on frequencies: ")
+            print(E_compress)
 
 
             # logit for unconstrained parameter learning (inverse sigmoid)
@@ -135,15 +137,34 @@ class MoAT(nn.Module):
         print("computing loss w/ V_compress")
         print(V_compress)
 
+        '''
         #E_compress is all pairwise joints, based on their lambda parameters
         for i in range(n):
           for j in range(n):
             if i == j: continue
             E_compress[i, j, :, :] = self.catmodel.getjoints(V_compress[i], V_compress[j], self.lambdas[i, j, :], method="none")
         
+        
+        self.E_compress = E_compress
 
         V  = V_compress.clone()
         E = E_compress.clone()
+        '''
+        E_computed = torch.zeros_like(E_compress)  # no gradients attached here
+
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                E_computed[i, j, :, :] = self.catmodel.getjoints(
+                    V_compress[i], V_compress[j], self.lambdas[i, j, :], method="none"
+                )
+
+        self.E_compress = E_computed.detach()  # avoid storing something that needs gradients
+
+        E = E_computed  # this one will keep the graph for backprop
+        V  = V_compress.clone()
+
         E_mask = (1.0 - torch.diag(torch.ones(n)).unsqueeze(-1).unsqueeze(-1)).to(E.device) #broadcasts to 1, 1, n, n diag matrix (zeroes out Xi, Xi)
         E = E * E_mask
         E=torch.clamp(E,0,1)
