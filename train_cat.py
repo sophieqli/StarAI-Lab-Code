@@ -194,7 +194,7 @@ def train_model(model, train, valid, test,
     model = model.to(device)
     model.train()
 
-    for epoch in range(0, max_epoch):
+    for epoch in range(0, 750): #REMEMBER TO CHANGE BACK TO MAX EPOCH
         print('Epoch: {}'.format(epoch))
 
         # step in train
@@ -204,17 +204,20 @@ def train_model(model, train, valid, test,
             loss = nll(y_batch)
             optimizer.zero_grad()
             loss.backward()
-            print("Lambda gradients:", model.lambdas.grad)
+
+            print("Lambdas: ", model.lambdas)
+            print("Lambda gradients: ", model.lambdas.grad)
+            print("V_compress (probabilities before normliazation) :")
+            print(torch.sigmoid(model.V_compress))
+            print("Marg gradients: ")
+            print(model.V_compress.grad)
 
             optimizer.step()
-
-
             '''
             #Sophie::margs lowk go outta whack here so re-do IPFP
             ######################################
             with torch.no_grad():
                 log_joint = model.E_compress  # shape: [i, j, 2, 2]
-                
 
                 its = 15
                 print("before IPFP :")
@@ -265,6 +268,12 @@ def train_model(model, train, valid, test,
             torch.save(model, output_model_file)
             max_valid_ll = valid_ll
 
+    #out of loop, print final distribution
+    print("out of training, final distribution")
+    V_compress=  torch.sigmoid(model.V_compress)
+    V_compress = V_compress / V_compress.sum(dim=1, keepdim=True)
+    E_compress = 
+
 
 def main():
     args = init()
@@ -285,7 +294,7 @@ def main():
         t_data=train.x.clone()
         t_data.to(device)
         #model = MoAT(m, t_data)
-        model = MoAT(n=2, x=t_data, num_classes=3, device='cpu')
+        model = MoAT(n=3, x=t_data, num_classes=3, device='cpu')
         model.to(device)
         train_loader = DataLoader(dataset=train, batch_size=args.batch_size, shuffle=True)
         print('average ll: {}'.format(avg_ll(model, train_loader)))

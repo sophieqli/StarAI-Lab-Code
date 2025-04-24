@@ -70,7 +70,7 @@ class MoAT(nn.Module):
             E_compress = torch.clamp(E_compress, min=EPS)  # to avoid log(0) or div by 0
             E_compress = E_compress / (E_compress.sum(dim=(-2, -1), keepdim=True) + EPS)  # normalize joint by basically 1
 
-            print("initial marginals before logits ")
+            print("initial marginals, based on frequencies: ")
             print(V_compress)
             #initialize lambdas
             for k in range(self.l - 1):
@@ -91,10 +91,6 @@ class MoAT(nn.Module):
             # gives tensor n,n,l,l -> pairwise mutual info distributions (assuming independence for baseline comparison)
             V_new = torch.maximum(left * right, torch.ones(1) * EPS).to(device)
 
-            print("E new")
-            print(E_new)
-            print("V new")
-            print(V_new)
             MI = torch.sum(torch.sum(E_new * torch.log(E_new / V_new), dim=-1), dim=-1)
             '''
             Equivalently, for readability
@@ -105,8 +101,6 @@ class MoAT(nn.Module):
                     MI[i,j] = torch.sum(E_new[i, j] * torch.log(E_new[i, j] / V_new[i, j]))
             '''
             MI += EPS
-            print("Mutual ifo ")
-            print(MI)
 
             #ENSURE IN RANGE OF 0-1
             MI_max = (MI.max()+EPS).unsqueeze(0).unsqueeze(0)
@@ -115,14 +109,13 @@ class MoAT(nn.Module):
 
         # W stores the edge weights
         self.W = nn.Parameter(MI, requires_grad=True)
+
         # E_compress are no longer parameters -- they're determined by marginals and lambdas
-        # separate lambdas for each pair of variables Xi and Xj??
+        # separate lambdas for each pair of variables Xi and Xj (n x n x l)
         # initialize based on sub-grid ratios
 
+        #make lambdas unconstrained 
         self.lambdas = torch.special.logit(self.lambdas) 
-
-        #KEY CHANGE: make lambdas unconstrained
-
         self.lambdas = nn.Parameter(self.lambdas, requires_grad=True)
         self.E_compress = E_compress
         self.V_compress = nn.Parameter(V_compress, requires_grad=True)
@@ -136,7 +129,11 @@ class MoAT(nn.Module):
         batch_size, d = x.shape
         n, W, V_compress, E_compress = self.n, self.W, torch.sigmoid(self.V_compress),torch.sigmoid(self.E_compress) #convert back to raw probabilities
 
-        #is the problem that E_compress is NOT trainable and since lambda determines it, we can't backprop thru likelihiood and update lambda 
+        #must normalize V_compress so all margs add to 1
+        V_comp_norm = torch.sum(V_compress, dim = 1, keepdim = True) #sum each row 
+        V_compress = V_compress / V_comp_norm
+        print("computing loss w/ V_compress")
+        print(V_compress)
 
         #E_compress is all pairwise joints, based on their lambda parameters
         for i in range(n):
@@ -169,8 +166,6 @@ class MoAT(nn.Module):
 
         W = W.unsqueeze(0) # W: 1 * n * n; W * P: batch_size * n * n
         L = -W * P + torch.diag_embed(torch.sum(W * P, dim=2))  # L: batch_size * n * n
-        #print(" -> -> computing fwd with: ")
-        #print(E_compress)
 
         y = torch.sum(torch.log(Pr), dim=1) + torch.logdet(L[:, 1:, 1:]) - torch.logdet(L_0[1:, 1:])
 

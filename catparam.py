@@ -31,34 +31,22 @@ class LearnableJointCategorical(nn.Module):
             
             def bounded_param(x, a, b):
                 #return a + (b - a) * torch.sigmoid(x) 
-
+                #empirically, it seems tanh makes loss go down much faster
                 return a + (b-a) * 0.5 * (torch.tanh(x) + 1)
 
             lambda_scaled = bounded_param(lambda_scaled, lower, upper)
-            
 
-            '''
-            Old code: lambda_scaled were actual paramters, it worked TERRIBLY
-            if (lambda_scaled < lower) or lambda_scaled > upper: 
-                print("lambda ", lambda_scaled, " is out of range ", lower, upper)
-            lambda_scaled = torch.clamp(lambda_scaled, min=lower, max=upper)
-            '''
-
-
-            #Choose fixed lambda in range (later, make it trainable)
-            
+            #Choose fixed lambda in range (ignore if pre-determined, passed in)
             if method == "midpoint":
                 lambda_scaled = (lower + upper) / 2
             elif method == "random":
                 lambda_scaled = lower + (upper - lower) * torch.rand(())
 
-            #print("choosing lambda",level," as:", lambda_scaled)
             #create the new distribution
-            #Pl = torch.zeros((level, level)) 
             Pl = torch.zeros((level, level), device=lambdas.device)
 
-
             if level == 2: 
+                # Base case
                 Pl[0,0] = lambda_scaled
                 Pl[0,1] = p_u[0] / (p_u[0] + p_u[1]) - lambda_scaled
                 Pl[1,0] = p_v[0] / (p_v[0] + p_v[1]) - lambda_scaled
@@ -78,6 +66,7 @@ class LearnableJointCategorical(nn.Module):
 
 
 #SET WHATEVER MARGINALS U WANT HERE
+'''
 model = LearnableJointCategorical(num_classes=4)
 p_u = torch.tensor([0.3, 0.2, 0.1, 0.4])
 p_v = torch.tensor([0.4, 0.3, 0.25, 0.05])
@@ -87,3 +76,4 @@ print("v(col)-marginals: ", p_v)
 joint = model.getjoints(p_u, p_v, lambdas, method="none")
 
 print(joint)
+'''
