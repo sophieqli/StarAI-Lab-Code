@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 EPS=1e-7
 
-from catparam import LearnableJointCategorical
+from lambda_param import LearnableJointCategorical
 
 class MoAT(nn.Module):
 

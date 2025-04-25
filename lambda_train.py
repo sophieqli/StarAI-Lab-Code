@@ -11,7 +11,7 @@ import os
 import math
 import argparse
 
-from models import *
+from lambda_models import *
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
