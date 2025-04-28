@@ -95,16 +95,12 @@ class MoAT(nn.Module):
 
                         lower = max(EPS, pi_sum_prev / pi_sum + pj_sum_prev / pj_sum - 1)
                         upper = min(pi_sum_prev / pi_sum, pj_sum_prev / pj_sum)
-                        print(i, j, upper, lower)
 
                         self.lambdas[i, j, k-2] = (val-lower)/(upper-lower)
-                        print(val-lower, upper-lower)
-
-            print("the ratios are ")
-            print(self.lambdas)
 
             # logit for unconstrained parameter learning (inverse sigmoid)
-            V_compress = torch.special.logit(V_compress)
+            #V_compress = torch.special.logit(V_compress)
+            V_compress = torch.log(V_compress)
             E_compress = torch.special.logit(E_compress)
             #not learnable rn b/c of lambdas: E_compress = torch.special.logit(E_compress)
 
@@ -115,8 +111,6 @@ class MoAT(nn.Module):
             # gives tensor n,n,l,l -> pairwise mutual info distributions (assuming independence for baseline comparison)
             V_new = torch.maximum(left * right, torch.ones(1) * EPS).to(device)
 
-            print(E_new)
-            print(V_new)
             MI = torch.sum(torch.sum(E_new * torch.log(E_new / V_new), dim=-1), dim=-1)
             MI += EPS
 
@@ -152,16 +146,14 @@ class MoAT(nn.Module):
 
     def forward(self, x):
         batch_size, d = x.shape
-        n, W, V_compress, E_compress = self.n, self.W, torch.sigmoid(self.V_compress),torch.sigmoid(self.E_compress) #convert back to raw probabilities
+        #n, W, V_compress, E_compress = self.n, self.W, torch.sigmoid(self.V_compress),torch.sigmoid(self.E_compress) #convert back to raw probabilities
+        n, W, V_compress, E_compress = self.n, self.W, torch.softmax(self.V_compress, dim = 1),torch.sigmoid(self.E_compress) #convert back to raw probabilities
 
+        '''
         #must normalize V_compress so all margs add to 1
-        print("before norm ")
-        print(V_compress)
         V_comp_norm = torch.sum(V_compress, dim = 1, keepdim = True) #sum each row 
         V_compress = V_compress / V_comp_norm
-        print("after norm ")
-        print(V_compress)
-
+        '''
         #both V_compress and E_compress are fine here (recover initial param)
         E_computed = torch.zeros_like(E_compress)  # no gradients attached here
 
@@ -172,8 +164,6 @@ class MoAT(nn.Module):
                 )
 
         self.E_compress = E_computed.detach()  # avoid storing something that needs gradients
-        print("E compress inside fwd loop ")
-        print(self.E_compress)
 
         E = E_computed  # this one will keep the graph for backprop
         V  = V_compress.clone()
@@ -198,18 +188,12 @@ class MoAT(nn.Module):
                 x.unsqueeze(-1),
                 x.unsqueeze(1)] # E[i, j, x[idx, i], x[idx, j]]
 
-        print("PROB P")
-        print(P)
-
         P = P / torch.matmul(Pr.unsqueeze(2), Pr.unsqueeze(1)) # P: bath_size * n * n
 
         W = W.unsqueeze(0) # W: 1 * n * n; W * P: batch_size * n * n
         L = -W * P + torch.diag_embed(torch.sum(W * P, dim=2))  # L: batch_size * n * n
 
         y = torch.sum(torch.log(Pr), dim=1) + torch.logdet(L[:, 1:, 1:]) - torch.logdet(L_0[1:, 1:])
-        print("3 components ")
-        print(torch.sum(torch.log(Pr), dim=1) )
-        print(torch.logdet(L[:, 1:, 1:]), torch.logdet(L_0[1:, 1:]))
 
         if y[y != y].shape[0] != 0:
             print("NaN!")
