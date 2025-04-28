@@ -30,9 +30,9 @@ class LearnableJointCategorical(nn.Module):
             upper = torch.tensor(upper, dtype=lambdas.dtype, device=lambdas.device)
             
             def bounded_param(x, a, b):
-                #return a + (b - a) * torch.sigmoid(x) 
+                return a + (b - a) * torch.sigmoid(x) 
                 #empirically, it seems tanh makes loss go down much faster
-                return a + (b-a) * 0.5 * (torch.tanh(x) + 1)
+                #return a + (b-a) * 0.5 * (torch.tanh(x) + 1)
 
             lambda_scaled = bounded_param(lambda_scaled, lower, upper)
 

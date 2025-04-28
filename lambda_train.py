@@ -1,4 +1,15 @@
+import random
+import numpy as np
 import torch
+# 1. Set random seeds
+random.seed(0)
+np.random.seed(0)
+torch.manual_seed(0)
+torch.cuda.manual_seed_all(0)
+# Make sure operations are deterministic (optional, slows training a tiny bit)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
 import torch.nn as nn
 from torch.utils.data import Dataset, TensorDataset
 from torch.utils.data import DataLoader
@@ -181,7 +192,7 @@ def train_model(model, train, valid, test,
                 lr, weight_decay, batch_size, max_epoch,
                 log_file, output_model_file, dataset_name):
     valid_loader, test_loader = None, None
-    train_loader = DataLoader(dataset=train, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(dataset=train, batch_size=batch_size, shuffle=False) #CHANGE BACK TO TRUE
     if valid is not None:
         valid_loader = DataLoader(dataset=valid, batch_size=batch_size, shuffle=True)
     if test is not None:
@@ -194,7 +205,7 @@ def train_model(model, train, valid, test,
     model = model.to(device)
     model.train()
 
-    for epoch in range(0, 500): #REMEMBER TO CHANGE BACK TO MAX EPOCH
+    for epoch in range(0, 100): #REMEMBER TO CHANGE BACK TO MAX EPOCH
         print('Epoch: {}'.format(epoch))
 
         # step in train
@@ -295,7 +306,7 @@ def main():
         t_data=train.x.clone()
         t_data.to(device)
         #model = MoAT(m, t_data)
-        model = MoAT(n=3, x=t_data, num_classes=3, device='cpu')
+        model = MoAT(n=2, x=t_data, num_classes=2, device='cpu')
         model.to(device)
         train_loader = DataLoader(dataset=train, batch_size=args.batch_size, shuffle=True)
         print('average ll: {}'.format(avg_ll(model, train_loader)))
