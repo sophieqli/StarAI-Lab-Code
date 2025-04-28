@@ -150,23 +150,14 @@ class MoAT(nn.Module):
         n, W, V_compress, E_compress = self.n, self.W, torch.sigmoid(self.V_compress),torch.sigmoid(self.E_compress) #convert back to raw probabilities
 
         #must normalize V_compress so all margs add to 1
+        print("before norm ")
+        print(V_compress)
         V_comp_norm = torch.sum(V_compress, dim = 1, keepdim = True) #sum each row 
         V_compress = V_compress / V_comp_norm
+        print("after norm ")
+        print(V_compress)
+
         #both V_compress and E_compress are fine here (recover initial param)
-
-        '''
-        #E_compress is all pairwise joints, based on their lambda parameters
-        for i in range(n):
-          for j in range(n):
-            if i == j: continue
-            E_compress[i, j, :, :] = self.catmodel.getjoints(V_compress[i], V_compress[j], self.lambdas[i, j, :], method="none")
-        
-        
-        self.E_compress = E_compress
-
-        V  = V_compress.clone()
-        E = E_compress.clone()
-        '''
         E_computed = torch.zeros_like(E_compress)  # no gradients attached here
 
         for i in range(n):

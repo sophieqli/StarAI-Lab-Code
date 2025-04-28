@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+EPS = 1e-7
 class LearnableJointCategorical(nn.Module):
     def __init__(self, num_classes): 
         super().__init__()  
@@ -22,7 +23,7 @@ class LearnableJointCategorical(nn.Module):
             pv_sum = pv_sum_prev + p_v[level-1]
 
             #acceptable range for lambda
-            lower = max(0, pu_sum_prev / pu_sum + pv_sum_prev / pv_sum - 1)
+            lower = max(EPS, pu_sum_prev / pu_sum + pv_sum_prev / pv_sum - 1)
             upper = min(pu_sum_prev / pu_sum, pv_sum_prev / pv_sum)
 
             lambda_scaled = lambdas[level-2]
@@ -30,7 +31,7 @@ class LearnableJointCategorical(nn.Module):
             upper = torch.tensor(upper, dtype=lambdas.dtype, device=lambdas.device)
             
             def bounded_param(x, a, b):
-                return a + (b - a) * torch.sigmoid(x) 
+                return a + (b - a + EPS) * torch.sigmoid(x) 
                 #empirically, it seems tanh makes loss go down much faster
                 #return a + (b-a) * 0.5 * (torch.tanh(x) + 1)
 
