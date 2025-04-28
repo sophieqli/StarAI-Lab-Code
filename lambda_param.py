@@ -26,6 +26,11 @@ class LearnableJointCategorical(nn.Module):
             lower = max(EPS, pu_sum_prev / pu_sum + pv_sum_prev / pv_sum - 1)
             upper = min(pu_sum_prev / pu_sum, pv_sum_prev / pv_sum)
 
+            print("lower ")
+            print(lower)
+            print("upper ")
+            print(upper)
+
             lambda_scaled = lambdas[level-2]
             lower = torch.tensor(lower, dtype=lambdas.dtype, device=lambdas.device)
             upper = torch.tensor(upper, dtype=lambdas.dtype, device=lambdas.device)

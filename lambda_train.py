@@ -205,7 +205,7 @@ def train_model(model, train, valid, test,
     model = model.to(device)
     model.train()
 
-    for epoch in range(0, 100): #REMEMBER TO CHANGE BACK TO MAX EPOCH
+    for epoch in range(0, 500): #REMEMBER TO CHANGE BACK TO MAX EPOCH
         print('Epoch: {}'.format(epoch))
 
         # step in train

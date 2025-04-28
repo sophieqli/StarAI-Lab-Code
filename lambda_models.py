@@ -50,7 +50,10 @@ class MoAT(nn.Module):
 
                 E += torch.sum(x_2d, dim=0)  # shape: [n, n, l, l]
 
-            E = (E + 1.0) / float(m + 2) 
+            #this is weird and makes it not add to 1?? what is this line's purpose
+            #E = (E + 1.0) / float(m + 2) 
+            #E = (E + 1.0) / float(m + self.l**2) 
+            E = (E+EPS) / float(m)
 
             E = E.to('cpu')
             E_compress = E.clone()
@@ -82,6 +85,7 @@ class MoAT(nn.Module):
                         numer = torch.sum(E_compress[i, j, :k-1, :k-1], dim=(-2, -1))
                         denom = (torch.sum(E_compress[i, j, :k, :k], dim=(-2, -1)))
                         val = numer / (denom + EPS)
+                        #val = numer
                         
                         pi_sum_prev = V_compress[i][:k-1].sum()
                         pj_sum_prev = V_compress[j][:k-1].sum() 
@@ -94,6 +98,7 @@ class MoAT(nn.Module):
                         print(i, j, upper, lower)
 
                         self.lambdas[i, j, k-2] = (val-lower)/(upper-lower)
+                        print(val-lower, upper-lower)
 
             print("the ratios are ")
             print(self.lambdas)
