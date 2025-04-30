@@ -5,3 +5,6 @@ We believe this will reduce computational cost during gradient steps and improve
 
 Currently, I am implementing and testing a baseline model for the categorical case (as described in the MoAT paper's appendix) that involves l-1 trainable parameters (which we label as lambdas) for for l categories. Note that a fully general parameterization requires (l-1)^2 parameters, so it scales quadratically while the lambda paramaterization scales linearly (and thus captures less and less "information" from the distribution). So, it seems intuitive that we'll observe an increasing "performance gap" in the lambda baseline as l increases. I am interested in quantifying this initial performance gap and will build incrementally from there to eventually implement the general categorical parameterization. 
 
+Side note: since I'm interested in how distributions are represented/approximated, I've learned about and will code some sampling algorithms in gen_samples.py
+Fun fact: in a MoAT model, P(X_i | X_1, ..., X_{i-1}) is intractable, and this was proved in the lab's paper! 
+
