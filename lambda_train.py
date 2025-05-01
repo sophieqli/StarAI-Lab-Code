@@ -217,8 +217,6 @@ def train_model(model, train, valid, test,
             loss.backward()
 
             print("Lambda gradients: ", model.lambdas.grad)
-            print("V_compress (probabilities before normliazation) :")
-            print(torch.sigmoid(model.V_compress))
             print("Marg gradients: ")
             print(model.V_compress.grad)
 

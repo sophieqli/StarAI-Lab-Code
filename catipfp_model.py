@@ -50,8 +50,7 @@ class MoAT(nn.Module):
 
                 E += torch.sum(x_2d, dim=0)  # shape: [n, n, l, l]
 
-            #this is weird and makes it not add to 1?? what is this line's purpose
-            E = (E+EPS) / float(m)
+            E = (E+1) / float(m + 2)
 
             E = E.to('cpu')
             E_compress = E.clone()
@@ -88,6 +87,10 @@ class MoAT(nn.Module):
             right = V.unsqueeze(1).unsqueeze(0)  # shape: [1, n, 1, l]
             # gives tensor n,n,l,l -> pairwise mutual info distributions (assuming independence for baseline comparison)
             V_new = torch.maximum(left * right, torch.ones(1) * EPS).to(device)
+            print("E new ")
+            print(E_new)
+            print("V_new")
+            print(V_new)
 
             MI = torch.sum(torch.sum(E_new * torch.log(E_new / V_new), dim=-1), dim=-1)
             MI += EPS
@@ -110,6 +113,7 @@ class MoAT(nn.Module):
         print(self.W)
         print("E compress init to ")
         print(self.E_compress)
+        print(torch.sigmoid(self.E_compress))
         print("V compress init to ")
         print(self.V_compress)
 
@@ -160,6 +164,9 @@ class MoAT(nn.Module):
         L = -W * P + torch.diag_embed(torch.sum(W * P, dim=2))  # L: batch_size * n * n
 
         y = torch.sum(torch.log(Pr), dim=1) + torch.logdet(L[:, 1:, 1:]) - torch.logdet(L_0[1:, 1:])
+        print("comp 1: ")
+        print(torch.logdet(L[:,1:,1:]))
+        print(torch.logdet(L_0[1:,1:]))
 
         if y[y != y].shape[0] != 0:
             print("NaN!")

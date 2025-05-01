@@ -23,6 +23,7 @@ class MoAT(nn.Module):
         super().__init__()
 
         self.n = n
+        self.n = x.shape[1]
         self.l = num_classes
         self.lambdas = torch.zeros((n, n, self.l - 1))
         self.catmodel = LearnableJointCategorical(num_classes=num_classes)
@@ -51,9 +52,8 @@ class MoAT(nn.Module):
                 E += torch.sum(x_2d, dim=0)  # shape: [n, n, l, l]
 
             #this is weird and makes it not add to 1?? what is this line's purpose
-            #E = (E + 1.0) / float(m + 2) 
-            #E = (E + 1.0) / float(m + self.l**2) 
-            E = (E+EPS) / float(m)
+            #E = (E+1.0+EPS) / float(m+2)
+            E = (E+EPS) / m
 
             E = E.to('cpu')
             E_compress = E.clone()
@@ -63,8 +63,7 @@ class MoAT(nn.Module):
 
             for i in range(self.l):
                 cnt = torch.sum(x == i, dim=0)  # count how many times i appears in each column
-                V[:, i] = (cnt + 1) / (float(m) + self.l) #CHANGE INITIALIZATION BACK LATER
-                #V[:, i] = (cnt) / (float(m))
+                V[:, i] = (cnt + 1) / (float(m) + 2) #CHANGE INITIALIZATION BACK LATER
             V_compress = V.clone()
 
             E_compress = torch.clamp(E_compress, min=EPS)  # to avoid log(0) or div by 0
@@ -110,6 +109,8 @@ class MoAT(nn.Module):
             right = V.unsqueeze(1).unsqueeze(0)  # shape: [1, n, 1, l]
             # gives tensor n,n,l,l -> pairwise mutual info distributions (assuming independence for baseline comparison)
             V_new = torch.maximum(left * right, torch.ones(1) * EPS).to(device)
+            print(E_new)
+            print(V_new)
 
             MI = torch.sum(torch.sum(E_new * torch.log(E_new / V_new), dim=-1), dim=-1)
             MI += EPS
@@ -135,7 +136,7 @@ class MoAT(nn.Module):
         print("Lambdas init to ")
         print(self.lambdas)
         print("E compress init to ")
-        print(self.E_compress)
+        print(torch.sigmoid(self.E_compress))
         print("V compress init to ")
         print(self.V_compress)
 
@@ -157,8 +158,8 @@ class MoAT(nn.Module):
         #both V_compress and E_compress are fine here (recover initial param)
         E_computed = torch.zeros_like(E_compress)  # no gradients attached here
 
-        for i in range(n):
-            for j in range(n):
+        for j in range(n):
+            for i in range(n):
                 E_computed[i, j, :, :] = self.catmodel.getjoints(
                     V_compress[i], V_compress[j], self.lambdas[i, j, :], method="none"
                 )
@@ -199,7 +200,6 @@ class MoAT(nn.Module):
             print("NaN!")
             exit(0)
         #likelihood for each sample
-        print(" --> forward, returning ", y)
         return y
 
     ########################################
