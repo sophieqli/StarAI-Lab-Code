@@ -1,5 +1,7 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
+
 import networkx as nx
 import math
 import utils
@@ -10,6 +12,9 @@ import random
 from tqdm import tqdm
 
 EPS=1e-7
+floor_val = 1e-2
+alpha = 1.0
+
 
 from lambda_param import LearnableJointCategorical
 
@@ -22,10 +27,12 @@ class MoAT(nn.Module):
     def __init__(self, n, x, num_classes=2, device='cpu'):
         super().__init__()
 
-        self.n = n
+        x = x[:50] #just use 50 samples for testing speed 
         self.n = x.shape[1]
+        n = self.n
         self.l = num_classes
         self.lambdas = torch.zeros((n, n, self.l - 1))
+        #using the lambda_param.py
         self.catmodel = LearnableJointCategorical(num_classes=num_classes)
 
         print('initializing params ...')
@@ -51,7 +58,6 @@ class MoAT(nn.Module):
 
                 E += torch.sum(x_2d, dim=0)  # shape: [n, n, l, l]
 
-            #this is weird and makes it not add to 1?? what is this line's purpose
             #E = (E+1.0+EPS) / float(m+2)
             E = (E+EPS) / m
 
@@ -63,11 +69,11 @@ class MoAT(nn.Module):
 
             for i in range(self.l):
                 cnt = torch.sum(x == i, dim=0)  # count how many times i appears in each column
-                V[:, i] = (cnt + 1) / (float(m) + 2) #CHANGE INITIALIZATION BACK LATER
+                #V[:, i] = (cnt + 1) / (float(m) + 2) 
+                V[:, i] = (cnt+EPS ) / (float(m) ) 
             V_compress = V.clone()
 
             E_compress = torch.clamp(E_compress, min=EPS)  # to avoid log(0) or div by 0
-            #E_compress = E_compress / (E_compress.sum(dim=(-2, -1), keepdim=True) + EPS)  # normalize joint by basically 1
 
             print("initial marginals, based on frequencies: ")
             print(V_compress)
@@ -76,15 +82,12 @@ class MoAT(nn.Module):
             print(E_compress)
 
             #lambda initialization (ratio within lower to upper bound interval)
-
-            for i in range(self.l): 
-                for j in range(self.l):
+            for i in range(n): 
+                for j in range(n):
                     for k in range(2, self.l + 1): 
-                        
                         numer = torch.sum(E_compress[i, j, :k-1, :k-1], dim=(-2, -1))
                         denom = (torch.sum(E_compress[i, j, :k, :k], dim=(-2, -1)))
                         val = numer / (denom + EPS)
-                        #val = numer
                         
                         pi_sum_prev = V_compress[i][:k-1].sum()
                         pj_sum_prev = V_compress[j][:k-1].sum() 
@@ -100,17 +103,12 @@ class MoAT(nn.Module):
             # logit for unconstrained parameter learning (inverse sigmoid)
             #V_compress = torch.special.logit(V_compress)
             V_compress = torch.log(V_compress)
-            E_compress = torch.special.logit(E_compress)
-            #not learnable rn b/c of lambdas: E_compress = torch.special.logit(E_compress)
-
             print('computing MI ...')
             E_new = torch.maximum(E, torch.ones(1) * EPS).to(device) #Pairwise joints
             left = V.unsqueeze(1).unsqueeze(-1)  # shape: [n, 1, l, 1]
             right = V.unsqueeze(1).unsqueeze(0)  # shape: [1, n, 1, l]
             # gives tensor n,n,l,l -> pairwise mutual info distributions (assuming independence for baseline comparison)
             V_new = torch.maximum(left * right, torch.ones(1) * EPS).to(device)
-            print(E_new)
-            print(V_new)
 
             MI = torch.sum(torch.sum(E_new * torch.log(E_new / V_new), dim=-1), dim=-1)
             MI += EPS
@@ -128,17 +126,10 @@ class MoAT(nn.Module):
         #make lambdas unconstrained 
         self.lambdas = torch.special.logit(self.lambdas) 
         self.lambdas = nn.Parameter(self.lambdas, requires_grad=True)
-        self.E_compress = E_compress
+        self.E_compress = E_compress #note, NOT a trainable param
         self.V_compress = nn.Parameter(V_compress, requires_grad=True)
+        self.softmax = nn.Softmax(dim=1)  # define softmax layer here
 
-        print("Weights init to")
-        print(self.W)
-        print("Lambdas init to ")
-        print(self.lambdas)
-        print("E compress init to ")
-        print(torch.sigmoid(self.E_compress))
-        print("V compress init to ")
-        print(self.V_compress)
 
 
     ########################################
@@ -147,17 +138,14 @@ class MoAT(nn.Module):
 
     def forward(self, x):
         batch_size, d = x.shape
-        #n, W, V_compress, E_compress = self.n, self.W, torch.sigmoid(self.V_compress),torch.sigmoid(self.E_compress) #convert back to raw probabilities
-        n, W, V_compress, E_compress = self.n, self.W, torch.softmax(self.V_compress, dim = 1),torch.sigmoid(self.E_compress) #convert back to raw probabilities
+        n, W, V_compress, E_compress = self.n, self.W, self.softmax(self.V_compress),torch.sigmoid(self.E_compress) #convert back to raw probabilities
 
-        '''
         #must normalize V_compress so all margs add to 1
-        V_comp_norm = torch.sum(V_compress, dim = 1, keepdim = True) #sum each row 
-        V_compress = V_compress / V_comp_norm
-        '''
-        #both V_compress and E_compress are fine here (recover initial param)
+        #V_comp_norm = torch.sum(V_compress, dim = 1, keepdim = True) #sum each row 
+        #V_compress = V_compress / V_comp_norm
         E_computed = torch.zeros_like(E_compress)  # no gradients attached here
 
+        #here is where we compute the joints, based on lambdas (function is in lambda_param.py)
         for j in range(n):
             for i in range(n):
                 E_computed[i, j, :, :] = self.catmodel.getjoints(
@@ -172,8 +160,7 @@ class MoAT(nn.Module):
         E_mask = (1.0 - torch.diag(torch.ones(n)).unsqueeze(-1).unsqueeze(-1)).to(E.device) #broadcasts to 1, 1, n, n diag matrix (zeroes out Xi, Xi)
         E = E * E_mask
         E=torch.clamp(E,0,1)
-        print("E is ")
-        print(E)
+
 
         W = torch.sigmoid(W)
         W = torch.tril(W, diagonal=-1)

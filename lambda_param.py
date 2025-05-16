@@ -26,7 +26,7 @@ class LearnableJointCategorical(nn.Module):
             lower = max(EPS, pu_sum_prev / pu_sum + pv_sum_prev / pv_sum - 1)
             upper = min(pu_sum_prev / pu_sum, pv_sum_prev / pv_sum)
 
-            lambda_scaled = lambdas[level-2]
+            lambda_sc = lambdas[level-2]
             lower = torch.tensor(lower, dtype=lambdas.dtype, device=lambdas.device)
             upper = torch.tensor(upper, dtype=lambdas.dtype, device=lambdas.device)
             
@@ -35,7 +35,7 @@ class LearnableJointCategorical(nn.Module):
                 #empirically, it seems tanh makes loss go down much faster
                 #return a + (b-a) * 0.5 * (torch.tanh(x) + 1)
 
-            lambda_scaled = bounded_param(lambda_scaled, lower, upper)
+            lambda_scaled = bounded_param(lambda_sc, lower, upper)
 
             #Choose fixed lambda in range (ignore if pre-determined, passed in)
             if method == "midpoint":

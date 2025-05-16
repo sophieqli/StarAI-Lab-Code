@@ -171,8 +171,16 @@ def partition_variables(trainx, max_cluster_size):
 
     return partition
 
-def nll(y):
+
+def nll(y, V_compress):
     ll = -torch.sum(y)
+    '''
+    row_sums = V_compress.sum(dim=1)  # shape [n]
+    penalty = ((row_sums - 1.0) ** 2).mean()  # squared deviation from 1
+    alpha = 168
+    total_loss = ll + alpha * penalty
+    return total_loss
+    '''
     return ll
 
 def avg_ll(model, dataset_loader):
@@ -199,6 +207,8 @@ def train_model(model, train, valid, test,
         test_loader = DataLoader(dataset=test, batch_size=batch_size, shuffle=True)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
+
 
     # training loop
     max_valid_ll = -1.0e7
@@ -211,14 +221,21 @@ def train_model(model, train, valid, test,
         # step in train
         for x_batch in train_loader:
             x_batch = x_batch.to(device)
+            #print("before y_batch, x_btch is ")
             y_batch = model(x_batch)
-            loss = nll(y_batch)
+            #print("we have ybatch ")
+
+            loss = nll(y_batch, model.V_compress)
+
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # clip gradients after loss.backward()
 
+            '''
             print("Lambda gradients: ", model.lambdas.grad)
             print("Marg gradients: ")
             print(model.V_compress.grad)
+            '''
 
             optimizer.step()
             '''
@@ -263,10 +280,14 @@ def train_model(model, train, valid, test,
             '''
 
         # compute likelihood on train, valid and test
+        print("computing avg_ ll on sets ")
         train_ll = avg_ll(model, train_loader)
         valid_ll = avg_ll(model, valid_loader)
         test_ll = avg_ll(model, test_loader)
+        scheduler.step(train_ll)
 
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Current learning rate: {current_lr:.6f}")
         print('Dataset {}; Epoch {}; train ll: {}; valid ll: {}; test ll: {}'.format(dataset_name, epoch, train_ll, valid_ll, test_ll))
 
         with open(log_file, 'a+') as f:
