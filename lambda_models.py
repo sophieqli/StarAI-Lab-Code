@@ -8,6 +8,8 @@ import utils
 import random
 
 #hello :) 
+# 3 var case, 16 var case, fix weights to 1
+#model un-norm, gradient step, normalize outside it
 
 from tqdm import tqdm
 
@@ -27,7 +29,7 @@ class MoAT(nn.Module):
     def __init__(self, n, x, num_classes=2, device='cpu'):
         super().__init__()
 
-        x = x[:50] #just use 50 samples for testing speed 
+        x = x[:50, :2] #just truncate to 2 vars for testing
         self.n = x.shape[1]
         n = self.n
         self.l = num_classes
@@ -69,7 +71,6 @@ class MoAT(nn.Module):
 
             for i in range(self.l):
                 cnt = torch.sum(x == i, dim=0)  # count how many times i appears in each column
-                #V[:, i] = (cnt + 1) / (float(m) + 2) 
                 V[:, i] = (cnt+EPS ) / (float(m) ) 
             V_compress = V.clone()
 
@@ -102,6 +103,7 @@ class MoAT(nn.Module):
 
             # logit for unconstrained parameter learning (inverse sigmoid)
             #V_compress = torch.special.logit(V_compress)
+            #V_compress = torch.rand(n, self.l)
             V_compress = torch.log(V_compress)
             print('computing MI ...')
             E_new = torch.maximum(E, torch.ones(1) * EPS).to(device) #Pairwise joints
@@ -120,7 +122,8 @@ class MoAT(nn.Module):
             MI = torch.special.logit(MI)
 
         # W stores the edge weights
-        self.W = nn.Parameter(MI, requires_grad=True)
+        #self.W = nn.Parameter(MI, requires_grad=True)
+        self.W = MI
         # E_compress are no longer parameters -- they're determined by marginals and lambdas
 
         #make lambdas unconstrained 
@@ -131,12 +134,12 @@ class MoAT(nn.Module):
         self.softmax = nn.Softmax(dim=1)  # define softmax layer here
 
 
-
     ########################################
     ###             Inference            ###
     ########################################
 
     def forward(self, x):
+        x = x[:, :2]
         batch_size, d = x.shape
         n, W, V_compress, E_compress = self.n, self.W, self.softmax(self.V_compress),torch.sigmoid(self.E_compress) #convert back to raw probabilities
 
