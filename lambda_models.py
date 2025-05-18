@@ -28,8 +28,6 @@ class MoAT(nn.Module):
 
     def __init__(self, n, x, num_classes=2, device='cpu'):
         super().__init__()
-
-        x = x[:50, :2] #just truncate to 2 vars for testing
         self.n = x.shape[1]
         n = self.n
         self.l = num_classes
@@ -122,8 +120,7 @@ class MoAT(nn.Module):
             MI = torch.special.logit(MI)
 
         # W stores the edge weights
-        #self.W = nn.Parameter(MI, requires_grad=True)
-        self.W = MI
+        self.W = nn.Parameter(MI, requires_grad=True)
         # E_compress are no longer parameters -- they're determined by marginals and lambdas
 
         #make lambdas unconstrained 
@@ -132,6 +129,8 @@ class MoAT(nn.Module):
         self.E_compress = E_compress #note, NOT a trainable param
         self.V_compress = nn.Parameter(V_compress, requires_grad=True)
         self.softmax = nn.Softmax(dim=1)  # define softmax layer here
+        print("joints initializd to ")
+        print(self.E_compress)
 
 
     ########################################
@@ -139,25 +138,19 @@ class MoAT(nn.Module):
     ########################################
 
     def forward(self, x):
-        x = x[:, :2]
         batch_size, d = x.shape
+
         n, W, V_compress, E_compress = self.n, self.W, self.softmax(self.V_compress),torch.sigmoid(self.E_compress) #convert back to raw probabilities
+        pairs = [
+            self.catmodel.getjoints(V_compress[i], V_compress[j], self.lambdas[i, j], method="none")
+            for i in range(n) for j in range(n)
+        ]
 
-        #must normalize V_compress so all margs add to 1
-        #V_comp_norm = torch.sum(V_compress, dim = 1, keepdim = True) #sum each row 
-        #V_compress = V_compress / V_comp_norm
-        E_computed = torch.zeros_like(E_compress)  # no gradients attached here
+        E_computed = torch.stack(pairs, dim=0).reshape(n, n, self.l, self.l)
 
-        #here is where we compute the joints, based on lambdas (function is in lambda_param.py)
-        for j in range(n):
-            for i in range(n):
-                E_computed[i, j, :, :] = self.catmodel.getjoints(
-                    V_compress[i], V_compress[j], self.lambdas[i, j, :], method="none"
-                )
+        self.E_compress = E_computed.detach()
+        E = E_computed
 
-        self.E_compress = E_computed.detach()  # avoid storing something that needs gradients
-
-        E = E_computed  # this one will keep the graph for backprop
         V  = V_compress.clone()
 
         E_mask = (1.0 - torch.diag(torch.ones(n)).unsqueeze(-1).unsqueeze(-1)).to(E.device) #broadcasts to 1, 1, n, n diag matrix (zeroes out Xi, Xi)

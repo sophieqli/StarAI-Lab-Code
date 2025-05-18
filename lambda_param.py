@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 EPS = 1e-7
+
+
 class LearnableJointCategorical(nn.Module):
     def __init__(self, num_classes): 
         super().__init__()  
@@ -15,7 +17,6 @@ class LearnableJointCategorical(nn.Module):
 
         Pl_prev = None
         for level in range(2, self.l + 1):
-            
             pu_sum_prev = p_u[:level-1].sum()
             pv_sum_prev = p_v[:level-1].sum()
 
@@ -23,12 +24,9 @@ class LearnableJointCategorical(nn.Module):
             pv_sum = pv_sum_prev + p_v[level-1]
 
             #acceptable range for lambda
-            lower = max(EPS, pu_sum_prev / pu_sum + pv_sum_prev / pv_sum - 1)
-            upper = min(pu_sum_prev / pu_sum, pv_sum_prev / pv_sum)
-
+            lower = torch.maximum(torch.full_like(pu_sum_prev, EPS), pu_sum_prev / pu_sum + pv_sum_prev / pv_sum - 1)
+            upper = torch.minimum(pu_sum_prev/pu_sum, pv_sum_prev/pv_sum)
             lambda_sc = lambdas[level-2]
-            lower = torch.tensor(lower, dtype=lambdas.dtype, device=lambdas.device)
-            upper = torch.tensor(upper, dtype=lambdas.dtype, device=lambdas.device)
             
             def bounded_param(x, a, b):
                 return a + (b - a + EPS) * torch.sigmoid(x) 
