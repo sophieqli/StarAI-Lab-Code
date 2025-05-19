@@ -74,37 +74,8 @@ class LearnableJointCategorical(nn.Module):
             Pl_prev = Pl
         return Pl_prev
 
-
-
-#SET WHATEVER MARGINALS U WANT HERE
 '''
-model = LearnableJointCategorical(num_classes=4)
-p_u = torch.tensor([0.3, 0.2, 0.1, 0.4])
-p_v = torch.tensor([0.4, 0.3, 0.25, 0.05])
-lambdas = torch.tensor([0.215, 0.68, 0.56])
-print("u(row)-marginals: ", p_u)
-print("v(col)-marginals: ", p_v)
-joint = model.getjoints(p_u, p_v, lambdas, method="none")
-
-print(joint)
-
-n = 3
-l = 2  # binary
-
-p = torch.tensor([
-    [0.3, 0.7],
-    [0.4, 0.6],
-    [0.5, 0.5]
-])  # shape (n, l)
-lambdas = 0.1 * torch.ones(n, n, l-1)
-
-model = LearnableJointCategorical(num_classes=2)
-joint = model.getjoints(p, lambdas, method = "none")
-print(joint)
-'''
-
-
-
+Sample use case
 n = 3
 l = 4
 
@@ -136,3 +107,4 @@ lambdas = torch.tensor([
 # Get joint distributions for each variable pair (i, j)
 joint = model.getjoints(p, lambdas, method="none")
 print(joint)
+'''
