@@ -109,7 +109,23 @@ class MoAT(nn.Module):
         #print("raw logits ", self.V_compress)
         n, W, V_compress, E = self.n, self.W, self.softmax(self.V_compress),torch.exp(self.E_compress) #convert back to raw probabilities
         E = E / E.sum(dim=(-2, -1), keepdim=True)
+
+        #diffable iPFP 
+        EPS = 1e-7
+        A = V_compress  # row marginals
+        B = V_compress  # col marginals
+
+        A_b = A[:, None, :, None]  # [n, 1, l, 1]
+        B_b = B[None, :, None, :]  # [1, n, 1, l]
+
+        for _ in range(10):
+            row_marg = E.sum(dim=3, keepdim=True) + EPS  # [n, n, l, 1]
+            col_marg = E.sum(dim=2, keepdim=True) + EPS  # [n, n, 1, l]
+            E = E * (A_b / row_marg)
+            E = E * (B_b / col_marg)
+            E = E / (E.sum(dim=(-2, -1), keepdim=True) + EPS)
         V  = V_compress.clone()
+
 
         E_mask = (1.0 - torch.diag(torch.ones(n)).unsqueeze(-1).unsqueeze(-1)).to(E.device) #broadcasts to 1, 1, n, n diag matrix (zeroes out Xi, Xi)
         E = E * E_mask

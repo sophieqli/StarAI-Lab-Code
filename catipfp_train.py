@@ -205,7 +205,7 @@ def train_model(model, train, valid, test,
     model = model.to(device)
     model.train()
 
-    for epoch in range(0, max_epoch): #REMEMBER TO CHANGE BACK TO MAX EPOCH
+    for epoch in range(0, 500): 
         print('Epoch: {}'.format(epoch))
 
         # step in train
@@ -224,44 +224,13 @@ def train_model(model, train, valid, test,
             print(model.E_compress.grad)
             '''
             optimizer.step()
-            #Sophie::margs lowk go outta whack here so re-do IPFP
-            ######################################
-            #the ipfp takes the joints to another place in the loss landscape, where the grads might not be the right ones so the torch.no_grad thing is sus
-            with torch.no_grad():
-                #recover distr quickly 
-                V_compress = torch.softmax(model.V_compress, dim = -1)
-                E_probs = torch.exp(model.E_compress)
-                E_probs = E_probs / E_probs.sum(dim=(-2, -1), keepdim=True)
-            #    print("Before IPFP")
-            #    print(V_compress, E_probs)
-                its = 15
-                for i in range(its): 
-                    #convert back to true probs (might need to normalize to sum to 1 idk?)
-                    row_marg = E_probs.sum(dim=3, keepdim=True)
-                    col_marg = E_probs.sum(dim=2, keepdim=True)
-                    
-                    #get log of target margs (REPLACE)
-                    target_A = V_compress  # i-th row: marginal of variable i
-                    target_B = V_compress  # j-th row: marginal of variable j
-                    target_A_broadcast = target_A[:, None, :, None]  # shape [n,1,2,1] → broadcast to [n,n,2,1]
-                    target_B_broadcast = target_B[None, :, None, :]  # shape [1,n,1,2] → broadcast to [n,n,1,2]
-
-                    #update joints
-                    E_probs *= (target_A_broadcast)/row_marg * (target_B_broadcast)/col_marg
-                    E_probs = E_probs / E_probs.sum(dim=(-2, -1), keepdim=True)
-                
-            #    print("After IPFP ")
-            #    print(V_compress)
-            #    print(E_probs)
-                model.E_compress.copy_(torch.log(E_probs+EPS))
-
-            ######################################
 
         # compute likelihood on train, valid and test
         train_ll = avg_ll(model, train_loader)
         valid_ll = avg_ll(model, valid_loader)
         test_ll = avg_ll(model, test_loader)
 
+        #move ipfp projection here 
         print('Dataset {}; Epoch {}; train ll: {}; valid ll: {}; test ll: {}'.format(dataset_name, epoch, train_ll, valid_ll, test_ll))
 
         with open(log_file, 'a+') as f:
