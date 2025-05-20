@@ -215,18 +215,15 @@ def train_model(model, train, valid, test,
     model = model.to(device)
     model.train()
 
-    for epoch in range(0, 500): #REMEMBER TO CHANGE BACK TO MAX EPOCH
+    for epoch in range(0, max_epoch):
         print('Epoch: {}'.format(epoch))
 
         # step in train
         for x_batch in train_loader:
             x_batch = x_batch.to(device)
-            #print("before y_batch, x_btch is ")
             y_batch = model(x_batch)
-            #print("we have ybatch ")
 
             loss = nll(y_batch, model.V_compress)
-
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # clip gradients after loss.backward()
@@ -236,51 +233,9 @@ def train_model(model, train, valid, test,
             print("Marg gradients: ")
             print(model.V_compress.grad)
             '''
-
             optimizer.step()
-            '''
-            #Sophie::margs lowk go outta whack here so re-do IPFP
-            ######################################
-            with torch.no_grad():
-                log_joint = model.E_compress  # shape: [i, j, 2, 2]
-
-                its = 15
-                print("before IPFP :")
-                print(model.V_compress.shape)
-                print(model.E_compress.shape)
-                print("MARGS ", model.V_compress)
-                print("JOINTS ", model.E_compress)
-
-                for i in range(its): 
-                    #convert back to true probs (might need to normalize to sum to 1 idk?)
-                    log_joint_exp = torch.exp(log_joint)
-                    row_marg = log_joint_exp.sum(dim=3, keepdim=True)
-                    col_marg = log_joint_exp.sum(dim=2, keepdim=True)
-
-                    #get back into logs
-                    log_row_marg = torch.log(row_marg + 1e-12)
-                    log_col_marg = torch.log(col_marg + 1e-12)
-
-                    #get log of target margs (REPLACE)
-                    target_A = model.V_compress  # i-th row: marginal of variable i
-                    target_B = model.V_compress  # j-th row: marginal of variable j
-                    target_A_broadcast = target_A[:, None, :, None]  # shape [n,1,2,1] → broadcast to [n,n,2,1]
-                    target_B_broadcast = target_B[None, :, None, :]  # shape [1,n,1,2] → broadcast to [n,n,1,2]
-
-                    #update joints
-                    log_joint += (log_target_A - log_row_marg + log_target_B - log_col_marg)
-
-                model.E_compress.copy_(log_joint)
-            ######################################
-
-            torch.save(model, output_model_file)
-            print("after IPFP :")
-            print("MARGS ", model.V_compress)
-            print("JOINTS ", model.E_compress)
-            '''
 
         # compute likelihood on train, valid and test
-        print("computing avg_ ll on sets ")
         train_ll = avg_ll(model, train_loader)
         valid_ll = avg_ll(model, valid_loader)
         test_ll = avg_ll(model, test_loader)
@@ -324,8 +279,7 @@ def main():
     if args.model == 'MoAT':
         t_data=train.x.clone()
         t_data.to(device)
-        #model = MoAT(m, t_data)
-        model = MoAT(n=2, x=t_data, num_classes=2, device='cpu')
+        model = MoAT(n=2, x=t_data, num_classes=4, device='cpu')
         model.to(device)
         train_loader = DataLoader(dataset=train, batch_size=args.batch_size, shuffle=True)
         print('average ll: {}'.format(avg_ll(model, train_loader)))

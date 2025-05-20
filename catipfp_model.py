@@ -12,8 +12,6 @@ from tqdm import tqdm
 
 EPS=1e-7
 
-from lambda_param import LearnableJointCategorical
-
 class MoAT(nn.Module):
 
     ########################################
@@ -23,8 +21,12 @@ class MoAT(nn.Module):
     def __init__(self, n, x, num_classes=2, device='cpu'):
         super().__init__()
 
-        self.n = n
         self.n = x.shape[1]
+        if torch.isnan(x).any():
+            print("Found NaNs in features (X)!")
+            exit(1)
+
+        n = self.n
         self.l = num_classes
 
         print('initializing params ...')
@@ -60,12 +62,11 @@ class MoAT(nn.Module):
 
             for i in range(self.l):
                 cnt = torch.sum(x == i, dim=0)  # count how many times i appears in each column
-                V[:, i] = (cnt + 1) / (float(m) + self.l) #CHANGE INITIALIZATION BACK LATER
-                #V[:, i] = (cnt) / (float(m))
+                V[:, i] = (cnt) / (float(m)+EPS)
             V_compress = V.clone()
 
             E_compress = torch.clamp(E_compress, min=EPS)  # to avoid log(0) or div by 0
-            #E_compress = E_compress / (E_compress.sum(dim=(-2, -1), keepdim=True) + EPS)  # normalize joint by basically 1
+            V_compress = torch.clamp(V_compress, min = EPS)
 
             print("initial marginals, based on frequencies: ")
             print(V_compress)
@@ -73,13 +74,10 @@ class MoAT(nn.Module):
             print("initial joints, based on frequencies: ")
             print(E_compress)
 
-            #lambda initialization (ratio within lower to upper bound interval)
-
             # logit for unconstrained parameter learning (inverse sigmoid)
             V_compress = torch.log(V_compress)
-
             #we could also try sigmoid here to avoid normalization every time
-            E_compress = torch.special.logit(E_compress)
+            E_compress = torch.log(E_compress)
 
             print('computing MI ...')
             E_new = torch.maximum(E, torch.ones(1) * EPS).to(device) #Pairwise joints
@@ -87,11 +85,6 @@ class MoAT(nn.Module):
             right = V.unsqueeze(1).unsqueeze(0)  # shape: [1, n, 1, l]
             # gives tensor n,n,l,l -> pairwise mutual info distributions (assuming independence for baseline comparison)
             V_new = torch.maximum(left * right, torch.ones(1) * EPS).to(device)
-            print("E new ")
-            print(E_new)
-            print("V_new")
-            print(V_new)
-
             MI = torch.sum(torch.sum(E_new * torch.log(E_new / V_new), dim=-1), dim=-1)
             MI += EPS
 
@@ -103,20 +96,9 @@ class MoAT(nn.Module):
 
         # W stores the edge weights
         self.W = nn.Parameter(MI, requires_grad=True)
-        # E_compress are no longer parameters -- they're determined by marginals and lambdas
-
-        #make lambdas unconstrained 
         self.E_compress = nn.Parameter(E_compress, requires_grad = True)
         self.V_compress = nn.Parameter(V_compress, requires_grad=True)
-
-        print("Weights init to")
-        print(self.W)
-        print("E compress init to ")
-        print(self.E_compress)
-        print(torch.sigmoid(self.E_compress))
-        print("V compress init to ")
-        print(self.V_compress)
-
+        self.softmax = nn.Softmax(dim=1)  # define softmax layer here
 
     ########################################
     ###             Inference            ###
@@ -124,25 +106,14 @@ class MoAT(nn.Module):
 
     def forward(self, x):
         batch_size, d = x.shape
-        #n, W, V_compress, E_compress = self.n, self.W, torch.sigmoid(self.V_compress),torch.sigmoid(self.E_compress) #convert back to raw probabilities
-        n, W, V_compress, E_compress = self.n, self.W, torch.softmax(self.V_compress, dim = 1),torch.sigmoid(self.E_compress) #convert back to raw probabilities
-
-        ''' alternate normalization of marginals
-        V_comp_norm = torch.sum(V_compress, dim = 1, keepdim = True) #sum each row 
-        V_compress = V_compress / V_comp_norm
-        '''
-
-        E = E_compress  # this one will keep the graph for backprop
-        E = E / torch.sum(E, dim=(-2, -1), keepdim=True) 
+        #print("raw logits ", self.V_compress)
+        n, W, V_compress, E = self.n, self.W, self.softmax(self.V_compress),torch.exp(self.E_compress) #convert back to raw probabilities
+        E = E / E.sum(dim=(-2, -1), keepdim=True)
         V  = V_compress.clone()
 
         E_mask = (1.0 - torch.diag(torch.ones(n)).unsqueeze(-1).unsqueeze(-1)).to(E.device) #broadcasts to 1, 1, n, n diag matrix (zeroes out Xi, Xi)
         E = E * E_mask
         E=torch.clamp(E,0,1)
-        print("V_comp is ")
-        print(V_compress)
-        print("E is ")
-        print(E)
 
         W = torch.sigmoid(W)
         W = torch.tril(W, diagonal=-1)
@@ -164,15 +135,10 @@ class MoAT(nn.Module):
         L = -W * P + torch.diag_embed(torch.sum(W * P, dim=2))  # L: batch_size * n * n
 
         y = torch.sum(torch.log(Pr), dim=1) + torch.logdet(L[:, 1:, 1:]) - torch.logdet(L_0[1:, 1:])
-        print("comp 1: ")
-        print(torch.logdet(L[:,1:,1:]))
-        print(torch.logdet(L_0[1:,1:]))
 
         if y[y != y].shape[0] != 0:
             print("NaN!")
             exit(0)
-        #likelihood for each sample
-        print(" --> forward, returning ", y)
         return y
 
     ########################################

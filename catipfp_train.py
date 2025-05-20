@@ -216,54 +216,46 @@ def train_model(model, train, valid, test,
             optimizer.zero_grad()
             loss.backward()
 
-            #print("V_compress (probabilities before normliazation) :")
-            #print(torch.softmax(model.V_compress))
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # clip gradients after loss.backward()
+            '''
             print("Marg gradients: ")
             print(model.V_compress.grad)
             print("joint gradients: ")
             print(model.E_compress.grad)
-
-            optimizer.step()
             '''
+            optimizer.step()
             #Sophie::margs lowk go outta whack here so re-do IPFP
             ######################################
+            #the ipfp takes the joints to another place in the loss landscape, where the grads might not be the right ones so the torch.no_grad thing is sus
             with torch.no_grad():
-                log_joint = model.E_compress  # shape: [i, j, 2, 2]
-
+                #recover distr quickly 
+                V_compress = torch.softmax(model.V_compress, dim = -1)
+                E_probs = torch.exp(model.E_compress)
+                E_probs = E_probs / E_probs.sum(dim=(-2, -1), keepdim=True)
+            #    print("Before IPFP")
+            #    print(V_compress, E_probs)
                 its = 15
-                print("before IPFP :")
-                print(model.V_compress.shape)
-                print(model.E_compress.shape)
-                print("MARGS ", model.V_compress)
-                print("JOINTS ", model.E_compress)
-
                 for i in range(its): 
                     #convert back to true probs (might need to normalize to sum to 1 idk?)
-                    log_joint_exp = torch.exp(log_joint)
-                    row_marg = log_joint_exp.sum(dim=3, keepdim=True)
-                    col_marg = log_joint_exp.sum(dim=2, keepdim=True)
-
-                    #get back into logs
-                    log_row_marg = torch.log(row_marg + 1e-12)
-                    log_col_marg = torch.log(col_marg + 1e-12)
-
+                    row_marg = E_probs.sum(dim=3, keepdim=True)
+                    col_marg = E_probs.sum(dim=2, keepdim=True)
+                    
                     #get log of target margs (REPLACE)
-                    target_A = model.V_compress  # i-th row: marginal of variable i
-                    target_B = model.V_compress  # j-th row: marginal of variable j
+                    target_A = V_compress  # i-th row: marginal of variable i
+                    target_B = V_compress  # j-th row: marginal of variable j
                     target_A_broadcast = target_A[:, None, :, None]  # shape [n,1,2,1] → broadcast to [n,n,2,1]
                     target_B_broadcast = target_B[None, :, None, :]  # shape [1,n,1,2] → broadcast to [n,n,1,2]
 
                     #update joints
-                    log_joint += (log_target_A - log_row_marg + log_target_B - log_col_marg)
+                    E_probs *= (target_A_broadcast)/row_marg * (target_B_broadcast)/col_marg
+                    E_probs = E_probs / E_probs.sum(dim=(-2, -1), keepdim=True)
+                
+            #    print("After IPFP ")
+            #    print(V_compress)
+            #    print(E_probs)
+                model.E_compress.copy_(torch.log(E_probs+EPS))
 
-                model.E_compress.copy_(log_joint)
             ######################################
-
-            torch.save(model, output_model_file)
-            print("after IPFP :")
-            print("MARGS ", model.V_compress)
-            print("JOINTS ", model.E_compress)
-            '''
 
         # compute likelihood on train, valid and test
         train_ll = avg_ll(model, train_loader)
@@ -281,11 +273,10 @@ def train_model(model, train, valid, test,
 
     #out of loop, print final distribution
     print("out of training, final distribution (V_compress, lambdas, E_compress")
-    V_compress=  torch.sigmoid(model.V_compress)
-    V_compress = V_compress / V_compress.sum(dim=1, keepdim=True)
-    print(V_compress)
-    print(torch.sigmoid(model.lambdas))
-    print(model.E_compress)
+    print(torch.softmax(model.V_compress, dim = -1))
+    final_E = torch.exp(model.E_compress)
+    final_norm = final_E.sum(dim=(-2, -1), keepdim=True)
+    print(final_E / final_norm)
 
 
 def main():
@@ -307,7 +298,7 @@ def main():
         t_data=train.x.clone()
         t_data.to(device)
         #model = MoAT(m, t_data)
-        model = MoAT(n=2, x=t_data, num_classes=2, device='cpu')
+        model = MoAT(n=2, x=t_data, num_classes=4, device='cpu')
         model.to(device)
         train_loader = DataLoader(dataset=train, batch_size=args.batch_size, shuffle=True)
         print('average ll: {}'.format(avg_ll(model, train_loader)))

@@ -29,6 +29,10 @@ class MoAT(nn.Module):
     def __init__(self, n, x, num_classes=2, device='cpu'):
         super().__init__()
         self.n = x.shape[1]
+        if torch.isnan(x).any():
+            print("Found NaNs in features (X)!")
+            exit(1)
+
         n = self.n
         self.l = num_classes
         self.lambdas = torch.zeros((n, n, self.l - 1))
@@ -74,12 +78,6 @@ class MoAT(nn.Module):
 
             E_compress = torch.clamp(E_compress, min=EPS)  # to avoid log(0) or div by 0
 
-            print("initial marginals, based on frequencies: ")
-            print(V_compress)
-
-            print("initial joints, based on frequencies: ")
-            print(E_compress)
-
             #lambda initialization (ratio within lower to upper bound interval)
             for i in range(n): 
                 for j in range(n):
@@ -88,11 +86,9 @@ class MoAT(nn.Module):
                         denom = (torch.sum(E_compress[i, j, :k, :k], dim=(-2, -1)))
                         val = numer / (denom + EPS)
                         
-                        pi_sum_prev = V_compress[i][:k-1].sum()
-                        pj_sum_prev = V_compress[j][:k-1].sum() 
-                        
-                        pi_sum = pi_sum_prev + V_compress[i][k-1]
-                        pj_sum = pj_sum_prev + V_compress[j][k-1]
+                        pi_sum_prev = (torch.sum(E_compress[i, j, :k-1, :k], dim=(-2, -1)))
+                        pj_sum_prev = (torch.sum(E_compress[i, j, :k, :k-1], dim=(-2, -1)))
+                        pi_sum, pj_sum = denom, denom
 
                         lower = max(EPS, pi_sum_prev / pi_sum + pj_sum_prev / pj_sum - 1)
                         upper = min(pi_sum_prev / pi_sum, pj_sum_prev / pj_sum)
@@ -100,8 +96,6 @@ class MoAT(nn.Module):
                         self.lambdas[i, j, k-2] = (val-lower)/(upper-lower)
 
             # logit for unconstrained parameter learning (inverse sigmoid)
-            #V_compress = torch.special.logit(V_compress)
-            #V_compress = torch.rand(n, self.l)
             V_compress = torch.log(V_compress)
             print('computing MI ...')
             E_new = torch.maximum(E, torch.ones(1) * EPS).to(device) #Pairwise joints
@@ -113,7 +107,6 @@ class MoAT(nn.Module):
             MI = torch.sum(torch.sum(E_new * torch.log(E_new / V_new), dim=-1), dim=-1)
             MI += EPS
 
-            #ENSURE IN RANGE OF 0-1
             MI_max = (MI.max()+EPS).unsqueeze(0).unsqueeze(0)
             if MI_max >= 1: MI = MI / (MI_max)
 
@@ -124,14 +117,24 @@ class MoAT(nn.Module):
         # E_compress are no longer parameters -- they're determined by marginals and lambdas
 
         #make lambdas unconstrained 
-        self.lambdas = torch.special.logit(self.lambdas) 
+        self.lambdas = torch.clamp(self.lambdas, EPS, 1 - EPS)
+        self.lambdas = torch.special.logit(self.lambdas)
         self.lambdas = nn.Parameter(self.lambdas, requires_grad=True)
-        self.E_compress = E_compress #note, NOT a trainable param
+        self.E_compress = torch.special.logit(E_compress) #note, NOT a trainable param
         self.V_compress = nn.Parameter(V_compress, requires_grad=True)
         self.softmax = nn.Softmax(dim=1)  # define softmax layer here
-        print("joints initializd to ")
+        print("Joints init to ")
         print(self.E_compress)
 
+
+        n, W, V_compress, E_compress = self.n, self.W, self.softmax(self.V_compress),torch.sigmoid(self.E_compress) #convert back to raw probabilities
+        E_computed = self.catmodel.getjoints(V_compress, self.lambdas, method = "none")
+        logs = torch.clamp(E_computed/E_compress , EPS, 1-EPS)
+        tmp_kl = torch.sum(E_computed * torch.log(logs), dim = (-2, -1)) 
+
+        print("kl div b/w distrs ")
+        print(tmp_kl)
+        print(torch.min(tmp_kl), torch.max(tmp_kl))
 
     ########################################
     ###             Inference            ###
@@ -141,14 +144,7 @@ class MoAT(nn.Module):
         batch_size, d = x.shape
 
         n, W, V_compress, E_compress = self.n, self.W, self.softmax(self.V_compress),torch.sigmoid(self.E_compress) #convert back to raw probabilities
-        pairs = [
-            self.catmodel.getjoints(V_compress[i], V_compress[j], self.lambdas[i, j], method="none")
-            for i in range(n) for j in range(n)
-        ]
-
-        E_computed = torch.stack(pairs, dim=0).reshape(n, n, self.l, self.l)
-
-        self.E_compress = E_computed.detach()
+        E_computed = self.catmodel.getjoints(V_compress, self.lambdas, method = "none")
         E = E_computed
 
         V  = V_compress.clone()
