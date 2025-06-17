@@ -4,6 +4,7 @@ import networkx as nx
 import math
 import utils
 import random
+import time
 
 #hello v2!! :) 
 #this is the ipfp model (for a general categorical paramaterization)
@@ -20,7 +21,7 @@ class MoAT(nn.Module):
 
     def __init__(self, n, x, num_classes=2, device='cpu'):
         super().__init__()
-
+        
         self.n = x.shape[1]
         if torch.isnan(x).any():
             print("Found NaNs in features (X)!")
@@ -43,16 +44,22 @@ class MoAT(nn.Module):
                 block_size_ = min(block_size, m - block_idx)
                 x_block = x[block_idx:block_idx + block_size_]
                 x_2d = torch.zeros(block_size_, n, n, self.l, self.l).to(device)
+              #  print("block idx ", block_idx)
+              #  print("  block size ", block_size_)
                 for k in range(block_size_):
+                    #print("on k ", k)
                     for i in range(n):
                         for j in range(n):
                             a = x_block[k, i].item()
                             b = x_block[k, j].item()
                             x_2d[k, i, j, a, b] = 1  # X_i = a, X_j = b on this sample
 
+             #   print("done with block ")
                 E += torch.sum(x_2d, dim=0)  # shape: [n, n, l, l]
 
-            E = (E+1) / float(m + 2)
+            #E = (E+1) / float(m + 2)
+            E = (E+EPS) / float(m+EPS)
+
 
             E = E.to('cpu')
             E_compress = E.clone()
@@ -62,7 +69,9 @@ class MoAT(nn.Module):
 
             for i in range(self.l):
                 cnt = torch.sum(x == i, dim=0)  # count how many times i appears in each column
+                print("category ", i, " cnt is ", cnt)
                 V[:, i] = (cnt) / (float(m)+EPS)
+
             V_compress = V.clone()
 
             E_compress = torch.clamp(E_compress, min=EPS)  # to avoid log(0) or div by 0
@@ -70,9 +79,11 @@ class MoAT(nn.Module):
 
             print("initial marginals, based on frequencies: ")
             print(V_compress)
+            print("vjoints min/max ", torch.min(V_compress), torch.max(V_compress))
 
             print("initial joints, based on frequencies: ")
             print(E_compress)
+            print("joints min/max ", torch.min(E_compress), torch.max(E_compress))
 
             # logit for unconstrained parameter learning (inverse sigmoid)
             V_compress = torch.log(V_compress)
@@ -104,13 +115,30 @@ class MoAT(nn.Module):
     ###             Inference            ###
     ########################################
 
-    def forward(self, x):
+    def forward(self, x, step_count = 0):
         batch_size, d = x.shape
+        #print("=== V_compress Stats ===")
         #print("raw logits ", self.V_compress)
         n, W, V_compress, E = self.n, self.W, self.softmax(self.V_compress),torch.exp(self.E_compress) #convert back to raw probabilities
-        E = E / E.sum(dim=(-2, -1), keepdim=True)
+        #print("after softmax ", V_compress)
+        row_max = V_compress.max(dim=1).values
+        row_entropy = -(V_compress* V_compress.log()).sum(dim=1)
+        #print("V_probs max per row:", row_max)
+        #print("V_probs entropy per row:", row_entropy)
+        #print("Mean entropy (V):", row_entropy.mean().item())
 
-        #diffable iPFP 
+        #print("\n=== E_compress Stats ===")
+        #print("Raw logits (E):", self.E_compress)
+
+        E = E / E.sum(dim=(-2, -1), keepdim=True)
+        joint_entropy = -(E * E.clamp(min=1e-10).log()).sum(dim=(-2, -1))
+        #print("E_probs entropy per pair:", joint_entropy)
+        #print("Mean entropy (E):", joint_entropy.mean().item())
+
+        # Symmetrize E: E[i,j,a,b] = E[j,i,b,a] = average
+        #E_transposed = E.transpose(0, 1).transpose(-2, -1)  # swap i<->j and a<->b
+        #E = 0.5 * (E + E_transposed)
+
         EPS = 1e-7
         A = V_compress  # row marginals
         B = V_compress  # col marginals
@@ -118,15 +146,23 @@ class MoAT(nn.Module):
         A_b = A[:, None, :, None]  # [n, 1, l, 1]
         B_b = B[None, :, None, :]  # [1, n, 1, l]
 
-        for _ in range(10):
+        torch.cuda.synchronize()
+        start = time.time()
+        for _ in range(40):
             row_marg = E.sum(dim=3, keepdim=True) + EPS  # [n, n, l, 1]
+            #E = E * (A_b / row_marg)
+            E.mul_(A_b / row_marg)
             col_marg = E.sum(dim=2, keepdim=True) + EPS  # [n, n, 1, l]
-            E = E * (A_b / row_marg)
-            E = E * (B_b / col_marg)
-            E = E / (E.sum(dim=(-2, -1), keepdim=True) + EPS)
+            #E = E * (B_b / col_marg)
+            E.mul_(B_b / col_marg)
+
+            #E = E / (E.sum(dim=(-2, -1), keepdim=True) + EPS)
+            E.div_(E.sum(dim=(-2, -1), keepdim=True) + EPS)
+
+        torch.cuda.synchronize()
+#        print("ipfp time elapsed:", time.time() - start)
+
         V  = V_compress.clone()
-
-
         E_mask = (1.0 - torch.diag(torch.ones(n)).unsqueeze(-1).unsqueeze(-1)).to(E.device) #broadcasts to 1, 1, n, n diag matrix (zeroes out Xi, Xi)
         E = E * E_mask
         E=torch.clamp(E,0,1)
@@ -145,17 +181,45 @@ class MoAT(nn.Module):
                 x.unsqueeze(-1),
                 x.unsqueeze(1)] # E[i, j, x[idx, i], x[idx, j]]
 
+#        print("matmul")
+        torch.cuda.synchronize()
+        start = time.time()
         P = P / torch.matmul(Pr.unsqueeze(2), Pr.unsqueeze(1)) # P: bath_size * n * n
+
+        torch.cuda.synchronize()
+#        print("matmul time elapsed:", time.time() - start)
 
         W = W.unsqueeze(0) # W: 1 * n * n; W * P: batch_size * n * n
         L = -W * P + torch.diag_embed(torch.sum(W * P, dim=2))  # L: batch_size * n * n
 
+        log_L, log_L0 = torch.log(L[:, 1:, 1:]), torch.log(L_0[1:, 1:])
+         
+#        print("log det ")
+        torch.cuda.synchronize()
+        start = time.time()
         y = torch.sum(torch.log(Pr), dim=1) + torch.logdet(L[:, 1:, 1:]) - torch.logdet(L_0[1:, 1:])
+        torch.cuda.synchronize()
+#        print("logdet time elapsed:", time.time() - start)
 
         if y[y != y].shape[0] != 0:
             print("NaN!")
             exit(0)
         return y
+
+    def hutch_trace_estimator_torch(A, num_samples=25, vector_dim=None, device=None):
+        
+        if A.size() == 2: A.unsqueeze(0) #batched input
+        B, n = A.shape[0], A.shape[1]
+        estimates = []
+        for _ in range(num_samples):
+            epsilon = torch.randn(B, dim, 1, device=device)
+            Ae = torch.bmm(A, epsilon)
+            # epsilon^T @ (A epsilon) for each batch: shape (B, 1, 1) -> squeeze to (B,)
+            val = torch.bmm(epsilon.transpose(1, 2), Ae).squeeze()
+            estimates.append(val)
+
+        trace_estimate = torch.stack(trace_estimates, dim=0).mean(dim=0)
+        return trace_estimate
 
     ########################################
     ### Methods for Sampling Experiments ###

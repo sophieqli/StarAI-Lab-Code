@@ -23,6 +23,16 @@ import math
 import argparse
 
 from catipfp_model import *
+# Only add to sys.path here locally, right before import
+
+'''
+import sys
+import os
+
+sys.path.insert(0, os.path.abspath("/scratch/sophie_li/imagenet_loading"))
+from load_data import load_data
+'''
+
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -75,11 +85,11 @@ def init():
 
     return args
 
-def load_data(dataset_path, dataset,
+def load_data2(dataset_path, dataset,
             load_train=True, load_valid=True, load_test=True):
     dataset_path += '{}/'.format(dataset)
     train_path = dataset_path + '{}.train.data'.format(dataset)
-    valid_path = dataset_path + '{}.valid.data'.format(dataset)
+    valid_path = dataset_path + '{}.val.data'.format(dataset)
     test_path = dataset_path + '{}.test.data'.format(dataset)
 
     train, valid, test = None, None, None
@@ -171,8 +181,18 @@ def partition_variables(trainx, max_cluster_size):
 
     return partition
 
-def nll(y):
+def nll(y, E_compress, V):
     ll = -torch.sum(y)
+    ''' 
+    E_logits = E_compress
+    E = torch.exp(E_logits)
+    E = E / E.sum(dim=(-2, -1), keepdim=True)  # normalize per instance if batched
+    # Compute expected marginals (make sure V is a probability vector)
+    V_norm = torch.softmax(V, dim=-1)
+    # Marginal consistency penalty
+    lambd = 5000
+    penalty = lambd * marg_diff_loss(E, V_norm)
+    '''
     return ll
 
 def avg_ll(model, dataset_loader):
@@ -180,18 +200,30 @@ def avg_ll(model, dataset_loader):
     dataset_len = 0
     for x_batch in dataset_loader:
         x_batch = x_batch.to(device)
+        #print("on Pr x", x_batch.shape)
         y_batch = model(x_batch)
+    
+        # DEBUG PRINTS
+        '''
+        print(" - x_batch shape:", x_batch.shape)
+        print(" - y_batch shape:", y_batch.shape)
+        print(" - y_batch (first 5):", y_batch[:5])
+        print(" - batch sum ll:", y_batch.sum().item())
+        print(" - batch mean ll:", y_batch.mean().item())
+        '''
         ll = torch.sum(y_batch)
         lls.append(ll.item())
         dataset_len += x_batch.shape[0]
 
     avg_ll = torch.sum(torch.Tensor(lls)).item() / dataset_len
+
     return avg_ll
 
 def train_model(model, train, valid, test,
                 lr, weight_decay, batch_size, max_epoch,
                 log_file, output_model_file, dataset_name):
-    valid_loader, test_loader = None, None
+    #valid_loader, test_loader = val_load, val_load
+    #train_loader = train_load
     train_loader = DataLoader(dataset=train, batch_size=batch_size, shuffle=False) #CHANGE BACK TO TRUE
     if valid is not None:
         valid_loader = DataLoader(dataset=valid, batch_size=batch_size, shuffle=True)
@@ -205,25 +237,21 @@ def train_model(model, train, valid, test,
     model = model.to(device)
     model.train()
 
-    for epoch in range(0, 500): 
+    for epoch in range(0, 100): 
         print('Epoch: {}'.format(epoch))
 
         # step in train
+        step_count = 0
         for x_batch in train_loader:
             x_batch = x_batch.to(device)
-            y_batch = model(x_batch)
-            loss = nll(y_batch)
+            y_batch = model(x_batch, step_count=step_count)
+            loss = nll(y_batch, model.E_compress, model.V_compress)
             optimizer.zero_grad()
             loss.backward()
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # clip gradients after loss.backward()
-            '''
-            print("Marg gradients: ")
-            print(model.V_compress.grad)
-            print("joint gradients: ")
-            print(model.E_compress.grad)
-            '''
             optimizer.step()
+            step_count += 1
 
         # compute likelihood on train, valid and test
         train_ll = avg_ll(model, train_loader)
@@ -245,13 +273,20 @@ def train_model(model, train, valid, test,
     print(torch.softmax(model.V_compress, dim = -1))
     final_E = torch.exp(model.E_compress)
     final_norm = final_E.sum(dim=(-2, -1), keepdim=True)
-    print(final_E / final_norm)
+    E = final_E / final_norm
+    E_transposed = E.transpose(0, 1).transpose(-2, -1)  # swap i<->j and a<->b
+    E = 0.5 * (E + E_transposed)
+    print("Final joints are ")
+    print(E)
 
 
 def main():
     args = init()
 
-    train, valid, test = load_data(args.dataset_path, args.dataset)
+    #gives us the dataset files
+    train, valid, test = load_data2(args.dataset_path, args.dataset)
+
+    #t, v, train_load, val_load = load_data("/scratch/sophie_li/data" )
 
     print('train: {}'.format(train.x.shape))
     if valid is not None:
@@ -266,11 +301,11 @@ def main():
     if args.model == 'MoAT':
         t_data=train.x.clone()
         t_data.to(device)
-        #model = MoAT(m, t_data)
-        model = MoAT(n=2, x=t_data, num_classes=4, device='cpu')
+        model = MoAT(n=2, x=t_data, num_classes=512, device='cpu')
         model.to(device)
         train_loader = DataLoader(dataset=train, batch_size=args.batch_size, shuffle=True)
         print('average ll: {}'.format(avg_ll(model, train_loader)))
+        #print('average ll: {}'.format(avg_ll(model, train_load)))
 
     if model is None:
         print("invalid model")
