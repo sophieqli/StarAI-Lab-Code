@@ -258,8 +258,59 @@ def train_model(model, train, valid, test,
         valid_ll = avg_ll(model, valid_loader)
         test_ll = avg_ll(model, test_loader)
 
-        #move ipfp projection here 
         print('Dataset {}; Epoch {}; train ll: {}; valid ll: {}; test ll: {}'.format(dataset_name, epoch, train_ll, valid_ll, test_ll))
+
+        with torch.no_grad():
+            print("=== V_compress Stats ===")
+            print("raw logits ", model.V_compress)
+            V_compress, E = torch.softmax(model.V_compress, dim = -1),torch.exp(model.E_compress) #convert back to raw probabilities
+            print("after softmax ", V_compress)
+            row_max = V_compress.max(dim=1).values
+            row_entropy = -(V_compress* V_compress.log()).sum(dim=1)
+            row_mean = V_compress.mean(dim=1).values
+            print("V_probs max per row:", row_max)
+            print("V_probs mean per row:", row_mean)
+            print("V_probs entropy per row:", row_entropy)
+            print("Mean entropy (V):", row_entropy.mean().item())
+
+            print("\n=== E_compress Stats ===")
+            #print("Raw logits (E):", model.E_compress)
+
+            E = E / E.sum(dim=(-2, -1), keepdim=True)
+            joint_entropy = -(E * E.clamp(min=1e-10).log()).sum(dim=(-2, -1))
+            #print("E_probs entropy per pair:", joint_entropy)
+            print("Mean entropy (E):", joint_entropy.mean().item())
+
+            print("\n=== Entry Range Check ===")
+            print(f"V_compress min: {V_compress.min().item():.6e}, max: {V_compress.max().item():.6e}")
+            print(f"E min: {E.min().item():.6e}, max: {E.max().item():.6e}")
+
+
+            # === Marginal Consistency Diagnostics ===
+            row_margs = E.sum(dim=3)  # [n, n, l]
+            col_margs = E.sum(dim=2)  # [n, n, l]
+            V_i = V_compress[:, None, :]  # [n, 1, l]
+            V_j = V_compress[None, :, :]  # [1, n, l]
+
+            row_diff = torch.abs(row_margs - V_i)
+            col_diff = torch.abs(col_margs - V_j)
+
+            diag_mask = 1 - torch.eye(model.n, device=E.device).unsqueeze(-1)  # [n, n, 1]
+            row_diff = row_diff * diag_mask
+            col_diff = col_diff * diag_mask
+
+            row_mae = row_diff.mean().item()
+            col_mae = col_diff.mean().item()
+            max_row = row_diff.max().item()
+            max_col = col_diff.max().item()
+
+            print("\n=== Marginal Consistency Check ===")
+            print(f"Mean abs row marginal diff (E vs V): {row_mae:.6f}")
+            print(f"Mean abs col marginal diff (E vs V): {col_mae:.6f}")
+            print(f"Max row marginal diff: {max_row:.6f}")
+            print(f"Max col marginal diff: {max_col:.6f}")
+
+
 
         with open(log_file, 'a+') as f:
             f.write('{} {} {} {}\n'.format(epoch, train_ll, valid_ll, test_ll))
@@ -274,8 +325,6 @@ def train_model(model, train, valid, test,
     final_E = torch.exp(model.E_compress)
     final_norm = final_E.sum(dim=(-2, -1), keepdim=True)
     E = final_E / final_norm
-    E_transposed = E.transpose(0, 1).transpose(-2, -1)  # swap i<->j and a<->b
-    E = 0.5 * (E + E_transposed)
     print("Final joints are ")
     print(E)
 
@@ -301,7 +350,7 @@ def main():
     if args.model == 'MoAT':
         t_data=train.x.clone()
         t_data.to(device)
-        model = MoAT(n=2, x=t_data, num_classes=512, device='cpu')
+        model = MoAT(n=2, x=t_data, num_classes=8, device='cpu')
         model.to(device)
         train_loader = DataLoader(dataset=train, batch_size=args.batch_size, shuffle=True)
         print('average ll: {}'.format(avg_ll(model, train_loader)))

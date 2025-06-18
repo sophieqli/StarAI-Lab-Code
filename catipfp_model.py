@@ -11,7 +11,7 @@ import time
 
 from tqdm import tqdm
 
-EPS=1e-7
+EPS=1e-5
 
 class MoAT(nn.Module):
 
@@ -22,6 +22,10 @@ class MoAT(nn.Module):
     def __init__(self, n, x, num_classes=2, device='cpu'):
         super().__init__()
         
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device = torch.device(device)
+
+        print("on device ", device)
         self.n = x.shape[1]
         if torch.isnan(x).any():
             print("Found NaNs in features (X)!")
@@ -38,38 +42,31 @@ class MoAT(nn.Module):
             x = x.to(device)
 
             # pairwise marginals
-            E = torch.zeros(n, n, self.l, self.l).to(device)  # SL
+            E = torch.zeros(n, n, self.l, self.l).to(device)  
             block_size = (2 ** 30) // (n * n * self.l * self.l)
             for block_idx in tqdm(range(0, m, block_size)):
                 block_size_ = min(block_size, m - block_idx)
                 x_block = x[block_idx:block_idx + block_size_]
                 x_2d = torch.zeros(block_size_, n, n, self.l, self.l).to(device)
-              #  print("block idx ", block_idx)
-              #  print("  block size ", block_size_)
-                for k in range(block_size_):
-                    #print("on k ", k)
-                    for i in range(n):
-                        for j in range(n):
-                            a = x_block[k, i].item()
-                            b = x_block[k, j].item()
-                            x_2d[k, i, j, a, b] = 1  # X_i = a, X_j = b on this sample
+                x1, x2 = x_block.unsqueeze(2), x_block.unsqueeze(1)
+                for l1 in range(self.l):
+                    for l2 in range(self.l):
+                        x1l1 = (x1 == l1).float()                        
+                        x2l2 = (x2 == l2).float()                        
+                        x_2d[:, :, :, l1, l2] = torch.matmul(x1l1, x2l2)
 
-             #   print("done with block ")
                 E += torch.sum(x_2d, dim=0)  # shape: [n, n, l, l]
 
             #E = (E+1) / float(m + 2)
             E = (E+EPS) / float(m+EPS)
 
-
-            E = E.to('cpu')
+            #E = E.to('cpu')
             E_compress = E.clone()
 
             # univariate marginals initialization
-            V = torch.zeros(n, self.l)
-
+            V = torch.zeros(n, self.l).to(device)
             for i in range(self.l):
                 cnt = torch.sum(x == i, dim=0)  # count how many times i appears in each column
-                print("category ", i, " cnt is ", cnt)
                 V[:, i] = (cnt) / (float(m)+EPS)
 
             V_compress = V.clone()
@@ -91,11 +88,11 @@ class MoAT(nn.Module):
             E_compress = torch.log(E_compress)
 
             print('computing MI ...')
-            E_new = torch.maximum(E, torch.ones(1) * EPS).to(device) #Pairwise joints
+            E_new = torch.maximum(E, torch.ones(1, device=device) * EPS).to(device) #Pairwise joints
             left = V.unsqueeze(1).unsqueeze(-1)  # shape: [n, 1, l, 1]
             right = V.unsqueeze(1).unsqueeze(0)  # shape: [1, n, 1, l]
             # gives tensor n,n,l,l -> pairwise mutual info distributions (assuming independence for baseline comparison)
-            V_new = torch.maximum(left * right, torch.ones(1) * EPS).to(device)
+            V_new = torch.maximum(left * right, torch.ones(1, device=device)* EPS).to(device)
             MI = torch.sum(torch.sum(E_new * torch.log(E_new / V_new), dim=-1), dim=-1)
             MI += EPS
 
@@ -117,23 +114,8 @@ class MoAT(nn.Module):
 
     def forward(self, x, step_count = 0):
         batch_size, d = x.shape
-        #print("=== V_compress Stats ===")
-        #print("raw logits ", self.V_compress)
         n, W, V_compress, E = self.n, self.W, self.softmax(self.V_compress),torch.exp(self.E_compress) #convert back to raw probabilities
-        #print("after softmax ", V_compress)
-        row_max = V_compress.max(dim=1).values
-        row_entropy = -(V_compress* V_compress.log()).sum(dim=1)
-        #print("V_probs max per row:", row_max)
-        #print("V_probs entropy per row:", row_entropy)
-        #print("Mean entropy (V):", row_entropy.mean().item())
-
-        #print("\n=== E_compress Stats ===")
-        #print("Raw logits (E):", self.E_compress)
-
         E = E / E.sum(dim=(-2, -1), keepdim=True)
-        joint_entropy = -(E * E.clamp(min=1e-10).log()).sum(dim=(-2, -1))
-        #print("E_probs entropy per pair:", joint_entropy)
-        #print("Mean entropy (E):", joint_entropy.mean().item())
 
         # Symmetrize E: E[i,j,a,b] = E[j,i,b,a] = average
         #E_transposed = E.transpose(0, 1).transpose(-2, -1)  # swap i<->j and a<->b
@@ -148,15 +130,11 @@ class MoAT(nn.Module):
 
         torch.cuda.synchronize()
         start = time.time()
-        for _ in range(40):
+        for _ in range(250): #WE PROB NEED TO CHANGE THIS 
             row_marg = E.sum(dim=3, keepdim=True) + EPS  # [n, n, l, 1]
-            #E = E * (A_b / row_marg)
             E.mul_(A_b / row_marg)
             col_marg = E.sum(dim=2, keepdim=True) + EPS  # [n, n, 1, l]
-            #E = E * (B_b / col_marg)
             E.mul_(B_b / col_marg)
-
-            #E = E / (E.sum(dim=(-2, -1), keepdim=True) + EPS)
             E.div_(E.sum(dim=(-2, -1), keepdim=True) + EPS)
 
         torch.cuda.synchronize()
@@ -191,7 +169,6 @@ class MoAT(nn.Module):
 
         W = W.unsqueeze(0) # W: 1 * n * n; W * P: batch_size * n * n
         L = -W * P + torch.diag_embed(torch.sum(W * P, dim=2))  # L: batch_size * n * n
-
         log_L, log_L0 = torch.log(L[:, 1:, 1:]), torch.log(L_0[1:, 1:])
          
 #        print("log det ")
