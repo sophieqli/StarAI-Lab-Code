@@ -200,17 +200,17 @@ def avg_ll(model, dataset_loader):
     dataset_len = 0
     for x_batch in dataset_loader:
         x_batch = x_batch.to(device)
-        #print("on Pr x", x_batch.shape)
-        y_batch = model(x_batch)
-    
-        # DEBUG PRINTS
-        '''
-        print(" - x_batch shape:", x_batch.shape)
-        print(" - y_batch shape:", y_batch.shape)
-        print(" - y_batch (first 5):", y_batch[:5])
-        print(" - batch sum ll:", y_batch.sum().item())
-        print(" - batch mean ll:", y_batch.mean().item())
-        '''
+        
+        #now y_batch is a mixture, rather than y_batch = model(x_batch)
+        y_batch = torch.zeros(x_batch.shape[0], device = x_batch.device)
+
+        mix_ws = torch.exp(model.mix_ws)
+        mix_ws = mix_ws / mix_ws.sum() #normalize weights to add to 1
+        logits = []
+        for _ in range(model.K):
+            logits.append(model(x_batch, which_moat=_) + torch.log(mix_ws[_]))
+        y_batch = torch.logsumexp(torch.stack(logits, dim=0), dim=0)
+
         ll = torch.sum(y_batch)
         lls.append(ll.item())
         dataset_len += x_batch.shape[0]
@@ -222,8 +222,6 @@ def avg_ll(model, dataset_loader):
 def train_model(model, train, valid, test,
                 lr, weight_decay, batch_size, max_epoch,
                 log_file, output_model_file, dataset_name):
-    #valid_loader, test_loader = val_load, val_load
-    #train_loader = train_load
     train_loader = DataLoader(dataset=train, batch_size=batch_size, shuffle=False) #CHANGE BACK TO TRUE
     if valid is not None:
         valid_loader = DataLoader(dataset=valid, batch_size=batch_size, shuffle=True)
@@ -244,11 +242,27 @@ def train_model(model, train, valid, test,
         step_count = 0
         for x_batch in train_loader:
             x_batch = x_batch.to(device)
-            y_batch = model(x_batch, step_count=step_count)
+            #ybatch has shape x_batch.shape[0]
+            y_batch = torch.zeros(x_batch.shape[0], device = x_batch.device)
+            
+            mix_ws = torch.exp(model.mix_ws)
+            mix_ws = mix_ws / mix_ws.sum() #normalize weights to add to 1
+            logits = []
+            for _ in range(model.K):
+                logits.append(model(x_batch, epoch=epoch, which_moat=_) + torch.log(mix_ws[_]))
+            y_batch = torch.logsumexp(torch.stack(logits, dim=0), dim=0)
+
             loss = nll(y_batch, model.E_compress, model.V_compress)
             optimizer.zero_grad()
             loss.backward()
 
+            '''
+            if step_count % 1000 == 0: 
+                print("V_compress grad norm:", model.V_compress.grad.norm().item())
+                print("E_compress grad norm:", model.E_compress.grad.norm().item())
+                print("V_compress grad:", model.V_compress.grad)
+                print("E_compress grad:", model.E_compress.grad)
+            '''
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # clip gradients after loss.backward()
             optimizer.step()
             step_count += 1
@@ -259,7 +273,9 @@ def train_model(model, train, valid, test,
         test_ll = avg_ll(model, test_loader)
 
         print('Dataset {}; Epoch {}; train ll: {}; valid ll: {}; test ll: {}'.format(dataset_name, epoch, train_ll, valid_ll, test_ll))
+        print("weights: ", torch.exp(model.mix_ws))
 
+        '''
         with torch.no_grad():
             print("=== V_compress Stats ===")
             print("raw logits ", model.V_compress)
@@ -294,6 +310,7 @@ def train_model(model, train, valid, test,
 
             row_diff = torch.abs(row_margs - V_i)
             col_diff = torch.abs(col_margs - V_j)
+            print("sahpes of row and col diff shld be n x n x l: ", row_margs.shape, col_margs.shape)
 
             diag_mask = 1 - torch.eye(model.n, device=E.device).unsqueeze(-1)  # [n, n, 1]
             row_diff = row_diff * diag_mask
@@ -301,16 +318,19 @@ def train_model(model, train, valid, test,
 
             row_mae = row_diff.mean().item()
             col_mae = col_diff.mean().item()
+            row_median = row_diff.flatten().median().item()
+            col_median = col_diff.flatten().median().item()
             max_row = row_diff.max().item()
             max_col = col_diff.max().item()
 
             print("\n=== Marginal Consistency Check ===")
             print(f"Mean abs row marginal diff (E vs V): {row_mae:.6f}")
             print(f"Mean abs col marginal diff (E vs V): {col_mae:.6f}")
+            print(f"Median abs row marginal diff (E vs V): {row_median:.6f}")
+            print(f"Median abs col marginal diff (E vs V): {col_median:.6f}")
             print(f"Max row marginal diff: {max_row:.6f}")
             print(f"Max col marginal diff: {max_col:.6f}")
-
-
+        '''
 
         with open(log_file, 'a+') as f:
             f.write('{} {} {} {}\n'.format(epoch, train_ll, valid_ll, test_ll))
@@ -350,7 +370,7 @@ def main():
     if args.model == 'MoAT':
         t_data=train.x.clone()
         t_data.to(device)
-        model = MoAT(n=2, x=t_data, num_classes=8, device='cpu')
+        model = MoAT(n=2, x=t_data, num_classes=4, device='cpu')
         model.to(device)
         train_loader = DataLoader(dataset=train, batch_size=args.batch_size, shuffle=True)
         print('average ll: {}'.format(avg_ll(model, train_loader)))

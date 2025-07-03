@@ -11,7 +11,7 @@ import time
 
 from tqdm import tqdm
 
-EPS=1e-5
+EPS=1e-7
 
 class MoAT(nn.Module):
 
@@ -19,7 +19,7 @@ class MoAT(nn.Module):
     ###     Parameter Initialization     ###
     ########################################
 
-    def __init__(self, n, x, num_classes=2, device='cpu'):
+    def __init__(self, n, x, num_classes=2, device='cpu', K = 3):
         super().__init__()
         
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -56,12 +56,18 @@ class MoAT(nn.Module):
                         x_2d[:, :, :, l1, l2] = torch.matmul(x1l1, x2l2)
 
                 E += torch.sum(x_2d, dim=0)  # shape: [n, n, l, l]
-
             #E = (E+1) / float(m + 2)
             E = (E+EPS) / float(m+EPS)
-
-            #E = E.to('cpu')
+            #new init of E_compress
             E_compress = E.clone()
+            E_compress = E_compress.unsqueeze(0)
+            E_compress = E_compress.expand(K, -1, -1, -1, -1).clone()
+            epsilon_noise = 0.001 * torch.randn_like(E_compress)
+            E_compress = E_compress + epsilon_noise
+            E_compress = torch.clamp(E_compress, min=EPS)  # avoid negative probs
+            E_compress = E_compress / E_compress.sum(dim=(-2, -1), keepdim=True)
+            mix_ws = torch.full((K,), 1.0 / K)
+            mix_ws = torch.log(mix_ws)
 
             # univariate marginals initialization
             V = torch.zeros(n, self.l).to(device)
@@ -76,21 +82,29 @@ class MoAT(nn.Module):
 
             print("initial marginals, based on frequencies: ")
             print(V_compress)
-            print("vjoints min/max ", torch.min(V_compress), torch.max(V_compress))
-
             print("initial joints, based on frequencies: ")
             print(E_compress)
-            print("joints min/max ", torch.min(E_compress), torch.max(E_compress))
 
-            # logit for unconstrained parameter learning (inverse sigmoid)
+            #preliminary ipfp 
+            A_b = V_compress[:, None, :, None]  # [n, 1, l, 1]
+            B_b = V_compress[None, :, None, :]  # [1, n, 1, l]
+
+            for _ in range(K):
+                for it in range(240):
+                    row_marg = E_compress[_].sum(dim=3, keepdim=True) + EPS  # [n, n, l, 1]
+                    E_compress[_].mul_(A_b / row_marg)
+                    col_marg = E_compress[_].sum(dim=2, keepdim=True) + EPS  # [n, n, 1, l]
+                    E_compress[_].mul_(B_b / col_marg)
+                    E_compress[_].div_(E_compress[_].sum(dim=(-2, -1), keepdim=True) + EPS)
+
             V_compress = torch.log(V_compress)
-            #we could also try sigmoid here to avoid normalization every time
             E_compress = torch.log(E_compress)
 
             print('computing MI ...')
             E_new = torch.maximum(E, torch.ones(1, device=device) * EPS).to(device) #Pairwise joints
             left = V.unsqueeze(1).unsqueeze(-1)  # shape: [n, 1, l, 1]
             right = V.unsqueeze(1).unsqueeze(0)  # shape: [1, n, 1, l]
+
             # gives tensor n,n,l,l -> pairwise mutual info distributions (assuming independence for baseline comparison)
             V_new = torch.maximum(left * right, torch.ones(1, device=device)* EPS).to(device)
             MI = torch.sum(torch.sum(E_new * torch.log(E_new / V_new), dim=-1), dim=-1)
@@ -104,6 +118,8 @@ class MoAT(nn.Module):
 
         # W stores the edge weights
         self.W = nn.Parameter(MI, requires_grad=True)
+        self.K = K
+        self.mix_ws = nn.Parameter(mix_ws, requires_grad = True)
         self.E_compress = nn.Parameter(E_compress, requires_grad = True)
         self.V_compress = nn.Parameter(V_compress, requires_grad=True)
         self.softmax = nn.Softmax(dim=1)  # define softmax layer here
@@ -112,35 +128,55 @@ class MoAT(nn.Module):
     ###             Inference            ###
     ########################################
 
-    def forward(self, x, step_count = 0):
+    def forward(self, x, epoch = 0, which_moat = 0):
         batch_size, d = x.shape
-        n, W, V_compress, E = self.n, self.W, self.softmax(self.V_compress),torch.exp(self.E_compress) #convert back to raw probabilities
+        n, W, V_compress, E = self.n, self.W, self.softmax(self.V_compress),torch.exp(self.E_compress[which_moat]) #convert back to raw probabilities
         E = E / E.sum(dim=(-2, -1), keepdim=True)
 
         # Symmetrize E: E[i,j,a,b] = E[j,i,b,a] = average
         #E_transposed = E.transpose(0, 1).transpose(-2, -1)  # swap i<->j and a<->b
         #E = 0.5 * (E + E_transposed)
 
-        EPS = 1e-7
+        EPS = torch.tensor(1e-7, device=E.device) 
         A = V_compress  # row marginals
         B = V_compress  # col marginals
 
         A_b = A[:, None, :, None]  # [n, 1, l, 1]
         B_b = B[None, :, None, :]  # [1, n, 1, l]
-
         torch.cuda.synchronize()
         start = time.time()
-        for _ in range(250): #WE PROB NEED TO CHANGE THIS 
+
+        for _ in range(240): 
             row_marg = E.sum(dim=3, keepdim=True) + EPS  # [n, n, l, 1]
             E.mul_(A_b / row_marg)
             col_marg = E.sum(dim=2, keepdim=True) + EPS  # [n, n, 1, l]
             E.mul_(B_b / col_marg)
             E.div_(E.sum(dim=(-2, -1), keepdim=True) + EPS)
-
         torch.cuda.synchronize()
 #        print("ipfp time elapsed:", time.time() - start)
 
-        V  = V_compress.clone()
+        if epoch == 200: 
+            print("some distributions, AFTER PROJECTIONS")
+            for i in range(35):
+                for j in range(35):
+                    row_calc = torch.sum(E[i,j], dim = 1)
+                    col_calc = torch.sum(E[i,j], dim = 0)
+                    row_diff = torch.abs(row_calc - V_compress[i]).mean()
+                    col_diff = torch.abs(col_calc - V_compress[j]).mean()
+                    
+                    if col_diff.item() > 0.05 or row_diff.item() > 0.05: 
+                        print("--> i: ", i, " j: ", j)
+                        print(E[i,j])
+                        print("target row: ", V_compress[i])
+                        print("target col: ", V_compress[j])
+                        print("mean |row sum - target|: ", row_diff.item())
+                        print("mean |col sum - target|: ", col_diff.item())
+                    else: 
+                        print("mean |row sum - target|: ", row_diff)
+                        print("mean |col sum - target|: ", col_diff)
+
+
+        V = V_compress.clone()
         E_mask = (1.0 - torch.diag(torch.ones(n)).unsqueeze(-1).unsqueeze(-1)).to(E.device) #broadcasts to 1, 1, n, n diag matrix (zeroes out Xi, Xi)
         E = E * E_mask
         E=torch.clamp(E,0,1)
@@ -153,16 +189,19 @@ class MoAT(nn.Module):
         L_0 = -W + torch.diag_embed(torch.sum(W, dim=1))
 
         Pr = V[torch.arange(n).unsqueeze(0), x]
+        assert not torch.isnan(Pr).any(), "NaN in Pr"
 
         P = E[torch.arange(n).unsqueeze(0).unsqueeze(-1),
                 torch.arange(n).unsqueeze(0).unsqueeze(0),
                 x.unsqueeze(-1),
                 x.unsqueeze(1)] # E[i, j, x[idx, i], x[idx, j]]
+        assert not torch.isnan(P).any(), "NaN in P (from E lookup)"
 
 #        print("matmul")
         torch.cuda.synchronize()
         start = time.time()
         P = P / torch.matmul(Pr.unsqueeze(2), Pr.unsqueeze(1)) # P: bath_size * n * n
+        assert not torch.isnan(P).any(), "NaN in normalized P"
 
         torch.cuda.synchronize()
 #        print("matmul time elapsed:", time.time() - start)
@@ -170,33 +209,27 @@ class MoAT(nn.Module):
         W = W.unsqueeze(0) # W: 1 * n * n; W * P: batch_size * n * n
         L = -W * P + torch.diag_embed(torch.sum(W * P, dim=2))  # L: batch_size * n * n
         log_L, log_L0 = torch.log(L[:, 1:, 1:]), torch.log(L_0[1:, 1:])
+        assert not torch.isnan(L).any(), "NaN in L"
          
-#        print("log det ")
+        #print("log det ")
         torch.cuda.synchronize()
         start = time.time()
-        y = torch.sum(torch.log(Pr), dim=1) + torch.logdet(L[:, 1:, 1:]) - torch.logdet(L_0[1:, 1:])
+        #y = torch.sum(torch.log(Pr), dim=1) + torch.logdet(L[:, 1:, 1:]) - torch.logdet(L_0[1:, 1:])
+        try:
+            y = torch.sum(torch.log(Pr + 1e-7), dim=1)
+            y += torch.logdet(L[:, 1:, 1:] + 1e-7)
+            y -= torch.logdet(L_0[1:, 1:] + 1e-7)
+        except RuntimeError as e:
+            print("logdet failed:", e)
+            exit(0)
+
         torch.cuda.synchronize()
-#        print("logdet time elapsed:", time.time() - start)
+        #print("logdet time elapsed:", time.time() - start)
 
         if y[y != y].shape[0] != 0:
             print("NaN!")
             exit(0)
         return y
-
-    def hutch_trace_estimator_torch(A, num_samples=25, vector_dim=None, device=None):
-        
-        if A.size() == 2: A.unsqueeze(0) #batched input
-        B, n = A.shape[0], A.shape[1]
-        estimates = []
-        for _ in range(num_samples):
-            epsilon = torch.randn(B, dim, 1, device=device)
-            Ae = torch.bmm(A, epsilon)
-            # epsilon^T @ (A epsilon) for each batch: shape (B, 1, 1) -> squeeze to (B,)
-            val = torch.bmm(epsilon.transpose(1, 2), Ae).squeeze()
-            estimates.append(val)
-
-        trace_estimate = torch.stack(trace_estimates, dim=0).mean(dim=0)
-        return trace_estimate
 
     ########################################
     ### Methods for Sampling Experiments ###

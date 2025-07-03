@@ -2,7 +2,7 @@
 
 using namespace std;
 
-const int rows = 3, cols = 3;
+const int rows = 2, cols = 2;
 
 void normalize(double p[][cols], int rows, int cols){
     double tot = 0;
@@ -40,15 +40,13 @@ int main(){
 
 
 
-    double p[rows][cols] = { {0.02, 0.1, 0.43}, {0.07, 0.06, 0.04}, {0.07, 0.07, 0.14}};
+    double p[rows][cols] = { {0.2, 0.4}, {0.1, 0.3} };
 
     normalize(p, rows, cols); //so they add to 1
 
     //specify marginals (uniform if extracting copula)
-    double tar_rm[rows] = {0.3333, 0.3333, 0.3333};
-    double tar_cm[rows] = {0.3333, 0.3333, 0.3333};
-
-
+    double tar_rm[rows] = {0.2, 0.8};
+    double tar_cm[rows] = {0.5, 0.5};
 
 
     //current row/col marginals that are updated as we go
@@ -77,7 +75,6 @@ int main(){
         tar_cm[1] = 0.3333 + 1.0/(2.0*(it+3.5));
         tar_cm[2] = 0.3333 + 1.0/(2.0*(it+3.5));
         */
-        cout<<"tar margs update "<<tar_rm[0]<<" "<<tar_rm[1]<<" "<<tar_rm[2]<<endl;
 
         for (int i = 0; i < rows; i++){
             for (int j = 0; j < cols; j++){

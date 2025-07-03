@@ -40,3 +40,4 @@ print(P)
 print("Row sums (shld equal a):", P.sum(dim=1))
 print("Column sums (shld equal b):", P.sum(dim=0))
 
+#https://optimaltransport.github.io/pdf/ComputationalOT.pdf
