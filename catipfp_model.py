@@ -6,10 +6,11 @@ import utils
 import random
 import time
 
-#hello v2!! :) 
 #this is the ipfp model (for a general categorical paramaterization)
 
 from tqdm import tqdm
+from cont_copula import *
+
 
 EPS=1e-7
 
@@ -19,7 +20,7 @@ class MoAT(nn.Module):
     ###     Parameter Initialization     ###
     ########################################
 
-    def __init__(self, n, x, num_classes=2, device='cpu', K = 3):
+    def __init__(self, n, x, num_classes=2, device='cpu', K = 1):
         super().__init__()
         
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -42,6 +43,8 @@ class MoAT(nn.Module):
             x = x.to(device)
 
             # pairwise marginals
+            print(f"Allocating E with shape: ({n}, {n}, {self.l}, {self.l})")
+
             E = torch.zeros(n, n, self.l, self.l).to(device)  
             block_size = (2 ** 30) // (n * n * self.l * self.l)
             for block_idx in tqdm(range(0, m, block_size)):
@@ -62,7 +65,7 @@ class MoAT(nn.Module):
             E_compress = E.clone()
             E_compress = E_compress.unsqueeze(0)
             E_compress = E_compress.expand(K, -1, -1, -1, -1).clone()
-            epsilon_noise = 0.001 * torch.randn_like(E_compress)
+            epsilon_noise = 0.000 * torch.randn_like(E_compress) #forget the mixture idea for now
             E_compress = E_compress + epsilon_noise
             E_compress = torch.clamp(E_compress, min=EPS)  # avoid negative probs
             E_compress = E_compress / E_compress.sum(dim=(-2, -1), keepdim=True)
@@ -89,6 +92,7 @@ class MoAT(nn.Module):
             A_b = V_compress[:, None, :, None]  # [n, 1, l, 1]
             B_b = V_compress[None, :, None, :]  # [1, n, 1, l]
 
+            '''
             for _ in range(K):
                 for it in range(240):
                     row_marg = E_compress[_].sum(dim=3, keepdim=True) + EPS  # [n, n, l, 1]
@@ -96,6 +100,7 @@ class MoAT(nn.Module):
                     col_marg = E_compress[_].sum(dim=2, keepdim=True) + EPS  # [n, n, 1, l]
                     E_compress[_].mul_(B_b / col_marg)
                     E_compress[_].div_(E_compress[_].sum(dim=(-2, -1), keepdim=True) + EPS)
+            '''
 
             V_compress = torch.log(V_compress)
             E_compress = torch.log(E_compress)
@@ -146,14 +151,14 @@ class MoAT(nn.Module):
         torch.cuda.synchronize()
         start = time.time()
 
-        for _ in range(240): 
+        for _ in range(40): 
             row_marg = E.sum(dim=3, keepdim=True) + EPS  # [n, n, l, 1]
             E.mul_(A_b / row_marg)
             col_marg = E.sum(dim=2, keepdim=True) + EPS  # [n, n, 1, l]
             E.mul_(B_b / col_marg)
             E.div_(E.sum(dim=(-2, -1), keepdim=True) + EPS)
         torch.cuda.synchronize()
-#        print("ipfp time elapsed:", time.time() - start)
+#       print("ipfp time elapsed:", time.time() - start)
 
         if epoch == 200: 
             print("some distributions, AFTER PROJECTIONS")

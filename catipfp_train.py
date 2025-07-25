@@ -23,16 +23,7 @@ import math
 import argparse
 
 from catipfp_model import *
-# Only add to sys.path here locally, right before import
-
-'''
-import sys
-import os
-
-sys.path.insert(0, os.path.abspath("/scratch/sophie_li/imagenet_loading"))
-from load_data import load_data
-'''
-
+from cont_copula import *
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -183,15 +174,25 @@ def partition_variables(trainx, max_cluster_size):
 
 def nll(y, E_compress, V):
     ll = -torch.sum(y)
-    ''' 
+    '''
     E_logits = E_compress
     E = torch.exp(E_logits)
     E = E / E.sum(dim=(-2, -1), keepdim=True)  # normalize per instance if batched
     # Compute expected marginals (make sure V is a probability vector)
     V_norm = torch.softmax(V, dim=-1)
     # Marginal consistency penalty
-    lambd = 5000
-    penalty = lambd * marg_diff_loss(E, V_norm)
+    lambd = 1000
+
+    row_margs = E.sum(dim=-1)  # [K, n, n, l]
+    col_margs = E.sum(dim=-2)  # [K, n, n, l]
+    V_i = V_norm[None, :, None, :]  # [1, n, 1, l]
+    V_j = V_norm[None, None, :, :]  # [1, 1, n, l]
+
+    row_diff = torch.abs(row_margs - V_i).mean()
+    col_diff = torch.abs(col_margs - V_j).mean()
+
+    penalty = lambd * (row_diff + col_diff)
+    #print("ll: ", ll, " penalty adds ", penalty)
     '''
     return ll
 
@@ -239,7 +240,6 @@ def train_model(model, train, valid, test,
         print('Epoch: {}'.format(epoch))
 
         # step in train
-        step_count = 0
         for x_batch in train_loader:
             x_batch = x_batch.to(device)
             #ybatch has shape x_batch.shape[0]
@@ -255,17 +255,33 @@ def train_model(model, train, valid, test,
             loss = nll(y_batch, model.E_compress, model.V_compress)
             optimizer.zero_grad()
             loss.backward()
-
-            '''
-            if step_count % 1000 == 0: 
-                print("V_compress grad norm:", model.V_compress.grad.norm().item())
-                print("E_compress grad norm:", model.E_compress.grad.norm().item())
-                print("V_compress grad:", model.V_compress.grad)
-                print("E_compress grad:", model.E_compress.grad)
-            '''
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # clip gradients after loss.backward()
+
             optimizer.step()
-            step_count += 1
+            #try ipfp here to project original parameters -- qccumulate gradient 
+            '''
+            EPS = torch.tensor(1e-7, device=model.V_compress.device)
+            with torch.no_grad():
+
+                model.V_compress.copy_(torch.softmax(model.V_compress, dim=1))
+                for which_moat in range(model.K):
+                    # Project E_compress[which_moat] into positive space and normalize
+                    E_proj = torch.exp(model.E_compress[which_moat])
+                    E_proj = E_proj / (E_proj.sum(dim=(-2, -1), keepdim=True) + EPS)
+                    A_b = model.V_compress[:, None, :, None]  # [n, 1, l, 1]
+                    B_b = model.V_compress[None, :, None, :]  # [1, n, 1, l]
+
+                    for _ in range(20):
+                        row_marg = E_proj.sum(dim=3, keepdim=True) + EPS
+                        E_proj.mul_(A_b / row_marg)
+                        col_marg = E_proj.sum(dim=2, keepdim=True) + EPS
+                        E_proj.mul_(B_b / col_marg)
+                        E_proj /= E_proj.sum(dim=(-2, -1), keepdim=True) + EPS
+
+                    model.E_compress[which_moat].copy_(torch.log(E_proj + EPS))
+                # Also log-transform V_compress again
+                model.V_compress.copy_(torch.log(model.V_compress + EPS))
+                '''
 
         # compute likelihood on train, valid and test
         train_ll = avg_ll(model, train_loader)
@@ -273,7 +289,6 @@ def train_model(model, train, valid, test,
         test_ll = avg_ll(model, test_loader)
 
         print('Dataset {}; Epoch {}; train ll: {}; valid ll: {}; test ll: {}'.format(dataset_name, epoch, train_ll, valid_ll, test_ll))
-        print("weights: ", torch.exp(model.mix_ws))
 
         '''
         with torch.no_grad():
@@ -301,18 +316,17 @@ def train_model(model, train, valid, test,
             print(f"V_compress min: {V_compress.min().item():.6e}, max: {V_compress.max().item():.6e}")
             print(f"E min: {E.min().item():.6e}, max: {E.max().item():.6e}")
 
-
             # === Marginal Consistency Diagnostics ===
-            row_margs = E.sum(dim=3)  # [n, n, l]
-            col_margs = E.sum(dim=2)  # [n, n, l]
-            V_i = V_compress[:, None, :]  # [n, 1, l]
-            V_j = V_compress[None, :, :]  # [1, n, l]
+            row_margs = E.sum(dim=-1)  # [K, n, n, l]
+            col_margs = E.sum(dim=-2)  # [K, n, n, l]
+            V_i = V_compress[None, :, None, :]  # [1, n, 1, l]
+            V_j = V_compress[None, None, :, :]  # [1, 1, n, l]
 
             row_diff = torch.abs(row_margs - V_i)
             col_diff = torch.abs(col_margs - V_j)
-            print("sahpes of row and col diff shld be n x n x l: ", row_margs.shape, col_margs.shape)
+            print("sahpes of row and col diff shld be K x n x n x l: ", row_margs.shape, col_margs.shape)
 
-            diag_mask = 1 - torch.eye(model.n, device=E.device).unsqueeze(-1)  # [n, n, 1]
+            diag_mask = 1 - torch.eye(model.n, device=E.device).unsqueeze(-1).unsqueeze(0)  # [1, n, n, 1] ?? 
             row_diff = row_diff * diag_mask
             col_diff = col_diff * diag_mask
 
@@ -370,7 +384,7 @@ def main():
     if args.model == 'MoAT':
         t_data=train.x.clone()
         t_data.to(device)
-        model = MoAT(n=2, x=t_data, num_classes=4, device='cpu')
+        model = MoAT(n=2, x=t_data, num_classes=256, device='cpu')
         model.to(device)
         train_loader = DataLoader(dataset=train, batch_size=args.batch_size, shuffle=True)
         print('average ll: {}'.format(avg_ll(model, train_loader)))
